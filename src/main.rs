@@ -9,6 +9,7 @@
 #![cfg(windows)]
 #![windows_subsystem = "windows"]
 
+mod config;
 mod dpi;
 mod hotkey;
 mod hotkey_bind;
@@ -113,7 +114,21 @@ fn main() {
         });
     });
 
-    // No default hotkey — user binds one via tray menu ▸ "Bind hotkey…".
+    // Restore saved hotkey from %APPDATA%\loupe\config.toml (if any).
+    if let Some(cfg) = config::load_hotkey() {
+        let mods = HOT_KEY_MODIFIERS(cfg.mods);
+        let vkey = cfg.vkey;
+        let ok = hotkey::register(main, mods, vkey);
+        STATE.with(|s| {
+            if let Some(st) = s.borrow_mut().as_mut() {
+                st.hotkey_registered = ok;
+                if ok {
+                    st.current_hotkey = Some((mods, vkey));
+                }
+            }
+        });
+    }
+
     if !tray::add(main) {
         eprintln!("lens: failed to add tray icon");
     }
@@ -265,6 +280,7 @@ unsafe extern "system" fn main_wnd_proc(
                             st.hotkey_registered = hotkey::register(st.main, mods, vkey);
                             if st.hotkey_registered {
                                 st.current_hotkey = Some((mods, vkey));
+                                config::save_hotkey(mods.0, vkey);
                             } else {
                                 eprintln!("lens: hotkey already in use by another app");
                             }
