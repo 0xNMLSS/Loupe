@@ -65,7 +65,7 @@ pub fn format_binding(mods: HOT_KEY_MODIFIERS, vkey: u32) -> String {
     s
 }
 
-const BIND_CLASS: &str = "lens.hotkey.bind";
+const BIND_CLASS: &str = "loupe.hotkey.bind";
 const BIND_W: i32 = 400;
 const BIND_H: i32 = 200;
 
@@ -96,7 +96,7 @@ fn register_class() {
 pub fn show(main_hwnd: HWND, current: Option<(HOT_KEY_MODIFIERS, u32)>) {
     register_class();
     let class = wstr(BIND_CLASS);
-    let title = wstr("lens \u{2014} Bind hotkey");
+    let title = wstr("Loupe \u{2014} Bind hotkey");
     unsafe {
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
         let sw = GetSystemMetrics(SM_CXSCREEN);
@@ -189,7 +189,7 @@ unsafe extern "system" fn bind_wnd_proc(
                 SetTextColor(hdc, COLORREF(0x00_20_20_20));
 
                 draw_line(hdc, &rc, pad, y,
-                    "Press a key combination to set the \u{201c}New lens\u{201d} shortcut:");
+                    "Press a key combination to set the \u{201c}New loupe\u{201d} shortcut:");
                 y += line_h;
 
                 SetTextColor(hdc, COLORREF(0x00_60_60_60));

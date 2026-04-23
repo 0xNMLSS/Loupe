@@ -32,7 +32,7 @@ fn build_nid(hwnd: HWND) -> NOTIFYICONDATAW {
         ..Default::default()
     };
     nid.hIcon = load_app_icon();
-    let tip: Vec<u16> = "lens — right-click to configure\0".encode_utf16().collect();
+    let tip: Vec<u16> = "Loupe — right-click to configure\0".encode_utf16().collect();
     let copy_len = tip.len().min(nid.szTip.len());
     nid.szTip[..copy_len].copy_from_slice(&tip[..copy_len]);
     nid
@@ -60,7 +60,7 @@ pub fn show_menu(hwnd: HWND) {
             Ok(m) => m,
             Err(_) => return,
         };
-        let new_lens = wstr("New lens");
+        let new_lens = wstr("New loupe");
         let bind = wstr("Bind hotkey\u{2026}");
         let quit = wstr("Quit");
         let _ = AppendMenuW(

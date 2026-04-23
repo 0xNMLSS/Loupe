@@ -1,5 +1,5 @@
 [package]
-name = "lens"
+name = "loupe"
 version = "0.1.0"
 edition = "2024"
 description = "A lightweight Windows magnifier: select a screen region and view it live, magnified, in a floating window."
@@ -26,7 +26,7 @@ strip = true
 panic = "abort"
 
 [[bin]]
-name = "lens"
+name = "loupe"
 path = "src/main.rs"
 
 [build-dependencies]

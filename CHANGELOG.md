@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Application renamed from **lens** to **Loupe**. Binary is now `loupe.exe`;
+  window class names updated to `loupe.*`; icon file renamed to `loupe.ico`.
+
 ### Fixed
 
 - **Hotkey bind dialog — text truncated**: window was too short (130 px) to show all

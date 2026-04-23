@@ -81,7 +81,7 @@ thread_local! {
     static STATE: RefCell<Option<AppState>> = const { RefCell::new(None) };
 }
 
-const MAIN_CLASS: &str = "lens.main";
+const MAIN_CLASS: &str = "loupe.main";
 const REFRESH_TIMER_ID: usize = 1;
 const REFRESH_TIMER_MS: u32 = 16; // ~60 Hz
 
@@ -138,7 +138,7 @@ fn main() {
 
 fn create_main_window() -> Option<HWND> {
     let class = wstr(MAIN_CLASS);
-    let title = wstr("lens");
+    let title = wstr("Loupe");
     unsafe {
         let hinstance = GetModuleHandleW(None).ok()?;
         let icon = load_app_icon();

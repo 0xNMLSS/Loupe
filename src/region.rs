@@ -84,7 +84,7 @@ thread_local! {
     static SELECTED_RECT: RefCell<Option<RECT>> = const { RefCell::new(None) };
 }
 
-const CLASS_NAME: &str = "lens.region.overlay";
+const CLASS_NAME: &str = "loupe.region.overlay";
 
 fn register_class() {
     let class_w = wstr(CLASS_NAME);
@@ -106,7 +106,7 @@ fn register_class() {
 pub fn show(main_hwnd: HWND) {
     register_class();
     let class_w = wstr(CLASS_NAME);
-    let title_w = wstr("lens region");
+    let title_w = wstr("loupe region");
     unsafe {
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
         let x = GetSystemMetrics(SM_XVIRTUALSCREEN);

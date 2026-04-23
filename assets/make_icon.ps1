@@ -1,10 +1,10 @@
-# Generate assets/lens.ico — a 256x256 magnifying-glass icon stored as a
+# Generate assets/loupe.ico — a 256x256 magnifying-glass icon stored as a
 # PNG-payload .ico (Vista+ supported). Run from the repository root:
 #   powershell -ExecutionPolicy Bypass -File assets\make_icon.ps1
 
 Add-Type -AssemblyName System.Drawing
 
-$out = Join-Path (Split-Path -Parent $PSCommandPath) 'lens.ico'
+$out = Join-Path (Split-Path -Parent $PSCommandPath) 'loupe.ico'
 $size = 256
 
 $bmp = New-Object System.Drawing.Bitmap $size, $size
