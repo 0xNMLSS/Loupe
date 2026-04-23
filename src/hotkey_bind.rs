@@ -5,7 +5,7 @@
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, PAINTSTRUCT,
-    SetBkMode, SetTextColor, TRANSPARENT, DT_WORDBREAK,
+    SetBkMode, SetTextColor, TRANSPARENT,     DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -66,8 +66,8 @@ pub fn format_binding(mods: HOT_KEY_MODIFIERS, vkey: u32) -> String {
 }
 
 const BIND_CLASS: &str = "loupe.hotkey.bind";
-const BIND_W: i32 = 400;
-const BIND_H: i32 = 200;
+const BIND_W: i32 = 420;
+const BIND_H: i32 = 240;
 
 /// State kept in `GWLP_USERDATA` for the bind window.
 struct BindState {
@@ -187,14 +187,13 @@ unsafe extern "system" fn bind_wnd_proc(
 
                 // ── Instruction lines ──────────────────────────────
                 SetTextColor(hdc, COLORREF(0x00_20_20_20));
-
                 draw_line(hdc, &rc, pad, y,
-                    "Press a key combination to set the \u{201c}New loupe\u{201d} shortcut:");
+                    "Bind a shortcut for \u{201c}New loupe\u{201d}:");
                 y += line_h;
 
                 SetTextColor(hdc, COLORREF(0x00_60_60_60));
                 draw_line(hdc, &rc, pad + 8, y,
-                    "Hold Ctrl, Alt or Shift, then press another key.");
+                    "Hold Ctrl, Alt or Shift — then press any other key.");
                 y += line_h + 10;
 
                 // ── Separator line ─────────────────────────────────
@@ -239,17 +238,30 @@ unsafe extern "system" fn bind_wnd_proc(
     }
 }
 
-/// Draw a single left-aligned text line at (pad_left, y) inside `window_rc`.
-unsafe fn draw_line(hdc: windows::Win32::Graphics::Gdi::HDC, window_rc: &RECT, pad_left: i32, y: i32, text: &str) {
+/// Draw a single text line at (pad_left, y). Uses DT_SINGLELINE so the text
+/// never wraps; long text gets an ellipsis rather than overflowing.
+unsafe fn draw_line(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    window_rc: &RECT,
+    pad_left: i32,
+    y: i32,
+    text: &str,
+) {
     unsafe {
         let mut v: Vec<u16> = text.encode_utf16().collect();
+        let row_h = 22i32;
         let mut r = RECT {
             left: window_rc.left + pad_left,
             top: window_rc.top + y,
             right: window_rc.right - pad_left,
-            bottom: window_rc.top + y + 24,
+            bottom: window_rc.top + y + row_h,
         };
-        let _ = DrawTextW(hdc, &mut v, &mut r, DT_WORDBREAK);
+        let _ = DrawTextW(
+            hdc,
+            &mut v,
+            &mut r,
+            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
     }
 }
 
