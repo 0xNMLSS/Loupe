@@ -8,11 +8,11 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetSystemMetrics,
-    GetWindowLongPtrW, HCURSOR, HMENU, IDC_CROSS, KillTimer, LoadCursorW, PostMessageW,
+    GetWindowLongPtrW, HCURSOR, HMENU, IDC_CROSS, KillTimer, LWA_ALPHA, LoadCursorW, PostMessageW,
     RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SW_SHOW, SetTimer, SetWindowLongPtrW, ShowWindow, WM_APP, WM_DESTROY, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    SW_SHOW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, ShowWindow, WM_APP,
+    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER,
+    WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -32,12 +32,10 @@ const RAINBOW_TIMER_ID: usize = 1;
 /// Hue degrees advanced per timer tick (~40 ms) — one full cycle ≈ 9 s.
 const RAINBOW_STEP: u16 = 4;
 
-/// Background fill for the opaque overlay (very dark charcoal).
-const OVERLAY_BG: COLORREF = COLORREF(0x00_28_28_28);
-
-/// Fill for the selected region interior (slightly lighter than the bg so the
-/// selection area is visually distinct even without desktop show-through).
-const OVERLAY_SEL: COLORREF = COLORREF(0x00_58_58_58);
+/// Alpha value for the transparent overlay window (0 = fully transparent,
+/// 255 = opaque). 60 ≈ 24% opacity — enough to dim the desktop without
+/// hiding it completely.
+const OVERLAY_ALPHA: u8 = 60;
 
 /// Convert an HSV hue (0–359°, S=1, V=1) to a Win32 `COLORREF` (0x00BBGGRR).
 fn hue_to_colorref(hue: u16) -> COLORREF {
@@ -105,9 +103,8 @@ pub fn show(main_hwnd: HWND) {
         let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-        // No WS_EX_LAYERED — overlay is fully opaque, painted solid.
         let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             PCWSTR(class_w.as_ptr()),
             PCWSTR(title_w.as_ptr()),
             WS_POPUP,
@@ -135,6 +132,8 @@ pub fn show(main_hwnd: HWND) {
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
+        // Semi-transparent overlay — desktop shows through, border still pops.
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), OVERLAY_ALPHA, LWA_ALPHA);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetCapture(hwnd);
         // Start the rainbow animation timer (~25 fps).
@@ -225,8 +224,9 @@ unsafe extern "system" fn wnd_proc(
                 let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
 
-                // Opaque dark background — no alpha transparency.
-                let bg = CreateSolidBrush(OVERLAY_BG);
+                // Dim the entire screen. Because the window has LWA_ALPHA, every
+                // pixel is uniformly blended — painting black darkens the desktop.
+                let bg = CreateSolidBrush(COLORREF(0x00_00_00_00));
                 FillRect(hdc, &ps.rcPaint, bg);
                 let _ = DeleteObject(bg.into());
 
@@ -242,9 +242,10 @@ unsafe extern "system" fn wnd_proc(
                         bottom: ry,
                     };
 
-                    // Fill the selection interior with a lighter shade so it
-                    // reads as "the chosen area" against the dark overlay.
-                    let sel_fill = CreateSolidBrush(OVERLAY_SEL);
+                    // Near-black fill inside the selection: at 24 % overlay alpha
+                    // this lets the desktop show through more clearly than the
+                    // dimmed surround, giving a natural "spotlight" effect.
+                    let sel_fill = CreateSolidBrush(COLORREF(0x00_08_08_08));
                     FillRect(hdc, &sel, sel_fill);
                     let _ = DeleteObject(sel_fill.into());
 
