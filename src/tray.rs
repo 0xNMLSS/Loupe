@@ -52,15 +52,22 @@ pub fn remove(hwnd: HWND) {
     }
 }
 
-/// Show the right-click menu at the current cursor position. The chosen item
-/// is delivered later as a `WM_COMMAND` with `IDM_NEW_LENS` or `IDM_QUIT`.
-pub fn show_menu(hwnd: HWND) {
+/// Show the right-click menu at the current cursor position.
+///
+/// `hotkey_label` is the currently bound shortcut (e.g. "Ctrl+Alt+Z"); when
+/// present it is appended to the first menu item so users can see at a glance
+/// what key triggers a new loupe.
+pub fn show_menu(hwnd: HWND, hotkey_label: Option<&str>) {
     unsafe {
         let menu = match CreatePopupMenu() {
             Ok(m) => m,
             Err(_) => return,
         };
-        let new_lens = wstr("New loupe");
+        let new_lens_text = match hotkey_label {
+            Some(k) => format!("New loupe  [{k}]"),
+            None => "New loupe".to_string(),
+        };
+        let new_lens = wstr(&new_lens_text);
         let bind = wstr("Bind hotkey\u{2026}");
         let quit = wstr("Quit");
         let _ = AppendMenuW(

@@ -1,4 +1,4 @@
-// lens — a tiny live screen-region magnifier for Windows.
+// loupe — a tiny live screen-region magnifier for Windows.
 //
 // Architecture: a single hidden-on-startup main window owns an optional global
 // hotkey and the tray icon. Triggering "New lens" (via tray menu or hotkey)
@@ -26,9 +26,9 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
     GetMessageW, HICON, HMENU, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MSG,
-    PostQuitMessage, RegisterClassW, SW_SHOW, SetLayeredWindowAttributes, SetTimer, ShowWindow,
-    TranslateMessage, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SIZE,
-    WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
+    PostQuitMessage, RegisterClassW, SW_HIDE, SW_SHOW, SetLayeredWindowAttributes, SetTimer,
+    ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP,
+    WM_RBUTTONUP, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PCWSTR;
 
@@ -247,7 +247,13 @@ unsafe extern "system" fn main_wnd_proc(
             }
             WM_APP_TRAY => match (lparam.0 as u32) & 0xFFFF {
                 WM_RBUTTONUP | WM_LBUTTONUP => {
-                    tray::show_menu(hwnd);
+                    let label = STATE.with(|s| {
+                        s.borrow()
+                            .as_ref()
+                            .and_then(|st| st.current_hotkey)
+                            .map(|(mods, vkey)| hotkey_bind::format_binding(mods, vkey))
+                    });
+                    tray::show_menu(hwnd, label.as_deref());
                     LRESULT(0)
                 }
                 _ => LRESULT(0),
@@ -324,6 +330,12 @@ unsafe extern "system" fn main_wnd_proc(
                         }
                     });
                 }
+                LRESULT(0)
+            }
+            WM_CLOSE => {
+                // Hide the magnifier window but keep the process alive (tray remains).
+                // The user can reopen it via "New loupe". Real exit is via tray → Quit.
+                let _ = ShowWindow(hwnd, SW_HIDE);
                 LRESULT(0)
             }
             WM_DESTROY => {

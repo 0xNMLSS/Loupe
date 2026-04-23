@@ -16,8 +16,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, HCURSOR, HMENU, IDC_CROSS, LoadCursorW, PostMessageW, RegisterClassW,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW,
     SetWindowLongPtrW, ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WM_APP, WM_DESTROY, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -357,6 +357,14 @@ unsafe extern "system" fn wnd_proc(
                 LRESULT(0)
             }
             WM_KEYDOWN if wparam.0 as i32 == 0x1B /* VK_ESCAPE */ => {
+                let main = st.main;
+                let _ = ReleaseCapture();
+                let _ = DestroyWindow(hwnd);
+                let _ = PostMessageW(Some(main), WM_APP_REGION_DONE, WPARAM(0), LPARAM(0));
+                LRESULT(0)
+            }
+            WM_RBUTTONDOWN => {
+                // Right-click cancels the selection (same as Escape).
                 let main = st.main;
                 let _ = ReleaseCapture();
                 let _ = DestroyWindow(hwnd);
