@@ -21,8 +21,8 @@ use std::cell::RefCell;
 
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
     GetMessageW, HICON, HMENU, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MSG,
@@ -263,9 +263,8 @@ unsafe extern "system" fn main_wnd_proc(
                 match id {
                     IDM_NEW_LENS => region::show(hwnd),
                     IDM_BIND_HOTKEY => {
-                        let current = STATE.with(|s| {
-                            s.borrow().as_ref().and_then(|st| st.current_hotkey)
-                        });
+                        let current =
+                            STATE.with(|s| s.borrow().as_ref().and_then(|st| st.current_hotkey));
                         hotkey_bind::show(hwnd, current);
                     }
                     IDM_QUIT => {

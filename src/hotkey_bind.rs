@@ -4,8 +4,8 @@
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, PAINTSTRUCT,
-    SetBkMode, SetTextColor, TRANSPARENT,     DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER,
+    BeginPaint, CreateSolidBrush, DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, DeleteObject,
+    DrawTextW, EndPaint, FillRect, PAINTSTRUCT, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -13,7 +13,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOD_SHIFT, MapVirtualKeyW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetSystemMetrics, GWLP_USERDATA,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetClientRect, GetSystemMetrics,
     GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW, PostMessageW, RegisterClassExW, SM_CXSCREEN,
     SM_CYSCREEN, SW_SHOW, SetWindowLongPtrW, ShowWindow, WM_APP, WM_DESTROY, WM_KEYDOWN, WM_PAINT,
     WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
@@ -122,7 +122,10 @@ pub fn show(main_hwnd: HWND, current: Option<(HOT_KEY_MODIFIERS, u32)>) {
             _ => return,
         };
 
-        let state = Box::new(BindState { main: main_hwnd, current });
+        let state = Box::new(BindState {
+            main: main_hwnd,
+            current,
+        });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
@@ -142,8 +145,7 @@ unsafe extern "system" fn bind_wnd_proc(
                 if vk == 0x1B {
                     // Escape → cancel.
                     let st = state_ref(hwnd);
-                    let _ =
-                        PostMessageW(Some(st.main), WM_APP_HOTKEY_BOUND, WPARAM(0), LPARAM(0));
+                    let _ = PostMessageW(Some(st.main), WM_APP_HOTKEY_BOUND, WPARAM(0), LPARAM(0));
                     let _ = DestroyWindow(hwnd);
                     return LRESULT(0);
                 }
@@ -187,18 +189,33 @@ unsafe extern "system" fn bind_wnd_proc(
 
                 // ── Instruction lines ──────────────────────────────
                 SetTextColor(hdc, COLORREF(0x00_20_20_20));
-                draw_line(hdc, &rc, pad, y,
-                    "Bind a shortcut for \u{201c}New loupe\u{201d}:");
+                draw_line(
+                    hdc,
+                    &rc,
+                    pad,
+                    y,
+                    "Bind a shortcut for \u{201c}New loupe\u{201d}:",
+                );
                 y += line_h;
 
                 SetTextColor(hdc, COLORREF(0x00_60_60_60));
-                draw_line(hdc, &rc, pad + 8, y,
-                    "Hold Ctrl, Alt or Shift — then press any other key.");
+                draw_line(
+                    hdc,
+                    &rc,
+                    pad + 8,
+                    y,
+                    "Hold Ctrl, Alt or Shift — then press any other key.",
+                );
                 y += line_h + 10;
 
                 // ── Separator line ─────────────────────────────────
                 let sep = CreateSolidBrush(COLORREF(0x00_D0_D0_D0));
-                let sep_r = RECT { left: pad, top: y, right: rc.right - pad, bottom: y + 1 };
+                let sep_r = RECT {
+                    left: pad,
+                    top: y,
+                    right: rc.right - pad,
+                    bottom: y + 1,
+                };
                 let _ = FillRect(hdc, &sep_r, sep);
                 let _ = DeleteObject(sep.into());
                 y += 12;

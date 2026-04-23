@@ -45,7 +45,10 @@ pub fn load_hotkey() -> Option<HotkeyConfig> {
         }
     }
 
-    Some(HotkeyConfig { mods: mods?, vkey: vkey? })
+    Some(HotkeyConfig {
+        mods: mods?,
+        vkey: vkey?,
+    })
 }
 
 // ── Save ─────────────────────────────────────────────────────────────────────

@@ -32,7 +32,9 @@ fn build_nid(hwnd: HWND) -> NOTIFYICONDATAW {
         ..Default::default()
     };
     nid.hIcon = load_app_icon();
-    let tip: Vec<u16> = "Loupe — right-click to configure\0".encode_utf16().collect();
+    let tip: Vec<u16> = "Loupe — right-click to configure\0"
+        .encode_utf16()
+        .collect();
     let copy_len = tip.len().min(nid.szTip.len());
     nid.szTip[..copy_len].copy_from_slice(&tip[..copy_len]);
     nid
