@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Hotkey persistence** (`src/config.rs`). The bound hotkey is saved to
+  `%APPDATA%\loupe\config.toml` immediately after a successful
+  `RegisterHotKey` call. On the next launch Loupe reads the file and
+  re-registers the hotkey automatically — no need to rebind every session.
+  The config file is plain text and can be deleted to reset the setting.
+
 ### Changed
 
 - Application renamed from **lens** to **Loupe**. Binary is now `loupe.exe`;
