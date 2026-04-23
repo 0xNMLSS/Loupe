@@ -2,8 +2,8 @@ use std::cell::RefCell;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreatePen, CreateSolidBrush, DeleteObject, EndPaint, FillRect, FrameRect, HBRUSH,
-    InvalidateRect, PAINTSTRUCT, PS_SOLID, SelectObject,
+    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HBRUSH, InvalidateRect,
+    PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
@@ -23,6 +23,14 @@ use crate::wstr;
 /// selection. `wparam.0 == 1` carries the four `i32` corners packed into
 /// the `LPARAM`-pointed `RECT`; `wparam.0 == 0` means cancelled.
 pub const WM_APP_REGION_DONE: u32 = WM_APP + 2;
+
+/// Selection-rectangle border thickness, in device pixels.
+const BORDER_THICKNESS: i32 = 4;
+
+/// Selection-rectangle border colour. `COLORREF` packs bytes as `0x00BBGGRR`,
+/// so `0x0000_E5FF` is RGB(255, 229, 0) — a saturated amber that stays
+/// readable against both bright and dark desktop backgrounds.
+const BORDER_COLOR: COLORREF = COLORREF(0x0000_E5FF);
 
 /// Per-overlay state kept alive via `GWLP_USERDATA`.
 struct Overlay {
@@ -203,13 +211,44 @@ unsafe extern "system" fn wnd_proc(
                     FillRect(hdc, &sel, clear);
                     let _ = DeleteObject(clear.into());
 
-                    let pen = CreatePen(PS_SOLID, 2, COLORREF(0x00FF_FFFF));
-                    let old = SelectObject(hdc, pen.into());
-                    let frame_brush = CreateSolidBrush(COLORREF(0x00FF_FFFF));
-                    FrameRect(hdc, &sel, frame_brush);
-                    let _ = SelectObject(hdc, old);
-                    let _ = DeleteObject(pen.into());
-                    let _ = DeleteObject(frame_brush.into());
+                    // Draw a thick coloured border. `FrameRect` always paints
+                    // a 1-pixel edge regardless of the selected pen, so we
+                    // composit the border out of four solid bands instead —
+                    // gives us a predictable thickness and lets us crank it
+                    // up without GDI surprises.
+                    let border = BORDER_THICKNESS;
+                    let color = BORDER_COLOR;
+                    let brush = CreateSolidBrush(color);
+
+                    let top = RECT {
+                        left: lx,
+                        top: ly,
+                        right: rx,
+                        bottom: (ly + border).min(ry),
+                    };
+                    let bottom = RECT {
+                        left: lx,
+                        top: (ry - border).max(ly),
+                        right: rx,
+                        bottom: ry,
+                    };
+                    let left = RECT {
+                        left: lx,
+                        top: ly,
+                        right: (lx + border).min(rx),
+                        bottom: ry,
+                    };
+                    let right = RECT {
+                        left: (rx - border).max(lx),
+                        top: ly,
+                        right: rx,
+                        bottom: ry,
+                    };
+                    FillRect(hdc, &top, brush);
+                    FillRect(hdc, &bottom, brush);
+                    FillRect(hdc, &left, brush);
+                    FillRect(hdc, &right, brush);
+                    let _ = DeleteObject(brush.into());
                 }
 
                 let _ = EndPaint(hwnd, &ps);

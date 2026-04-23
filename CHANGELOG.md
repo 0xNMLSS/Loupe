@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Region-selection overlay now draws a 4-pixel saturated-amber border
+  (RGB 255, 229, 0) instead of the previous 1-pixel white `FrameRect`. The
+  border is composited from four `FillRect` bands so the thickness is
+  exact and predictable on any DPI, and the colour reads cleanly against
+  both light and dark desktops.
+
 ### Fixed
 
 - Resizing the lens window now scales the magnified content to fill the new
