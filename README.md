@@ -8,7 +8,9 @@ always-on-top window. Built in Rust on top of the Win32 Magnification API
 ## Features (v0.1)
 
 - Per-monitor DPI v2 awareness — sharp on any scaling factor.
-- Always-on-top, resizable, draggable magnifier window.
+- Always-on-top, resizable, draggable magnifier window. Double-click the
+  magnified view to maximize (fullscreen on the current monitor); double-click
+  again to restore.
 - Drag-to-select source rectangle on a transparent fullscreen overlay with a
   static rainbow border.
 - Live update of the magnified view (~60 Hz) as the source area changes.
@@ -18,7 +20,88 @@ always-on-top window. Built in Rust on top of the Win32 Magnification API
 
 ## Build
 
-Requires the `x86_64-pc-windows-gnullvm` Rust toolchain (LLVM-MinGW).
+You need a Windows Rust **host** triple plus that toolchain’s C linker on
+`PATH`. Pick one of the following.
+
+### A. MSVC (simplest if you already use Visual Studio / Build Tools)
+
+Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+with the **Desktop development with C++** workload (MSVC + Windows SDK). Then:
+
+```powershell
+rustup default stable-x86_64-pc-windows-msvc
+cargo build --release
+```
+
+### B. GNU (MSYS2 MinGW)
+
+```powershell
+rustup default stable-x86_64-pc-windows-gnu
+```
+
+The GNU target needs MinGW **binutils** and **gcc** on `PATH`, including
+**`dlltool.exe`**, **`gcc.exe`**, **`ld.exe`**, and **`windres.exe`** (all ship
+with the UCRT64 / MINGW64 toolchain in MSYS2).
+
+- Install MSYS2, then in the **UCRT64** shell:
+  `pacman -S mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-binutils`
+- Either run **`cargo build`** from that MSYS2 environment, **or** add
+  `C:\msys64\ucrt64\bin` (or your MinGW `bin`) to the **Windows user `PATH`**
+  and open a **new** PowerShell.
+
+If you see **`dlltool.exe`: program not found** while using `*-windows-gnu`,
+you are building from a shell where MinGW `bin` is not on `PATH` — fix the
+path or use **A. MSVC** instead.
+
+### C. LLVM-MinGW (gnullvm host)
+
+If your default toolchain is `*-pc-windows-gnullvm`, the linker must be
+**`x86_64-w64-mingw32-clang`** from [llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases)
+(unzip and add the `bin` folder to `PATH`). If you see **linker
+`x86_64-w64-mingw32-clang` not found**, either install that LLVM-MinGW `bin`
+directory or switch host with **A** or **B** above (`rustup default …`).
+
+### One-time PATH setup (Windows — gnullvm via winget)
+
+If you installed Rust via `rustup` and LLVM-MinGW via `winget`, neither is
+automatically added to the **permanent** Windows user `PATH`. Run this once in
+**PowerShell** (adjust the LLVM-MinGW folder name to match your installed
+version):
+
+```powershell
+$cargoBin = "$env:USERPROFILE\.cargo\bin"
+$llvmBin  = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\" +
+            "MartinStorsjo.LLVM-MinGW.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\" +
+            "llvm-mingw-20260421-ucrt-x86_64\bin"   # <-- update tag if newer
+
+$cur = [System.Environment]::GetEnvironmentVariable("Path", "User")
+foreach ($p in @($cargoBin, $llvmBin)) {
+    if (($cur -split ";") -notcontains $p) { $cur = "$p;$cur" }
+}
+[System.Environment]::SetEnvironmentVariable("Path", $cur, "User")
+Write-Host "Done — open a new PowerShell window and run: cargo build --release"
+```
+
+After that, **open a new PowerShell window** and `cargo build --release` works
+without any extra setup. Common symptoms when this step is skipped:
+
+| Error | Cause |
+|---|---|
+| `cargo: command not found` (Bash) or `CommandNotFoundException` (PS) | `~\.cargo\bin` not on `PATH` |
+| `error calling dlltool 'dlltool.exe': program not found` | wrong toolchain (`gnu` instead of `gnullvm`) |
+| `linker 'x86_64-w64-mingw32-clang' not found` | LLVM-MinGW `bin\` not on `PATH` |
+
+---
+
+The build embeds `assets/loupe.ico` via `app.rc`. For **GNU / gnullvm** targets,
+`windres` must also be available (MinGW **binutils**). If **`windres`** is not
+found:
+
+- MSYS2: `pacman -S mingw-w64-ucrt-x86_64-binutils` and keep that `bin` on
+  `PATH`, **or**
+- Set `WINDRES` to the full path of `windres.exe`.
+
+The build script also probes common MSYS2 `bin` paths when `PATH` is minimal.
 
 ```powershell
 cargo build --release
