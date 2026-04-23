@@ -2,17 +2,18 @@ use std::cell::RefCell;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect, PAINTSTRUCT,
+    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HDC, InvalidateRect,
+    PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetSystemMetrics,
-    GetWindowLongPtrW, HCURSOR, HMENU, IDC_CROSS, KillTimer, LWA_ALPHA, LoadCursorW, PostMessageW,
+    GetWindowLongPtrW, HCURSOR, HMENU, IDC_CROSS, LWA_ALPHA, LoadCursorW, PostMessageW,
     RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SW_SHOW, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, ShowWindow, WM_APP,
-    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SW_SHOW, SetLayeredWindowAttributes, SetWindowLongPtrW, ShowWindow, WM_APP, WM_DESTROY,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -26,11 +27,9 @@ pub const WM_APP_REGION_DONE: u32 = WM_APP + 2;
 /// Selection-rectangle border thickness in device pixels.
 const BORDER_THICKNESS: i32 = 4;
 
-/// Timer id for the rainbow hue animation inside the overlay window.
-const RAINBOW_TIMER_ID: usize = 1;
-
-/// Hue degrees advanced per timer tick (~40 ms) — one full cycle ≈ 9 s.
-const RAINBOW_STEP: u16 = 4;
+/// Pixels per rainbow colour segment along the border perimeter.
+/// Smaller = smoother gradient, more GDI brush operations per paint.
+const RAINBOW_SEG: i32 = 3;
 
 /// Alpha value for the transparent overlay window (0 = fully transparent,
 /// 255 = opaque). 60 ≈ 24% opacity — enough to dim the desktop without
@@ -56,6 +55,86 @@ fn hue_to_colorref(hue: u16) -> COLORREF {
     COLORREF(r | (g << 8) | (b << 16))
 }
 
+/// Draw a rainbow border by walking the perimeter clockwise and assigning each
+/// `RAINBOW_SEG`-pixel segment a hue proportional to its position / perimeter.
+/// The four corner squares are painted by whichever band reaches them first
+/// (top/bottom take priority over left/right since they are painted first).
+unsafe fn draw_rainbow_border(hdc: HDC, lx: i32, ly: i32, rx: i32, ry: i32, b: i32) {
+    let w = (rx - lx).max(1);
+    let h = (ry - ly).max(1);
+    // Perimeter of the centre-line: corners shared, so use full side lengths.
+    let perim = 2 * (w + h);
+
+    // `pos` tracks how far along the perimeter we are (in pixels).
+    let mut pos = 0i32;
+
+    macro_rules! seg_color {
+        () => {
+            hue_to_colorref(((pos as i64 * 360 / perim as i64) as u16) % 360)
+        };
+    }
+    macro_rules! fill {
+        ($r:expr) => {{
+            let br = unsafe { CreateSolidBrush(seg_color!()) };
+            let _ = unsafe { FillRect(hdc, &$r, br) };
+            let _ = unsafe { DeleteObject(br.into()) };
+        }};
+    }
+
+    // Top band: left → right
+    let mut x = lx;
+    while x < rx {
+        let xe = (x + RAINBOW_SEG).min(rx);
+        fill!(RECT {
+            left: x,
+            top: ly,
+            right: xe,
+            bottom: (ly + b).min(ry)
+        });
+        pos += xe - x;
+        x = xe;
+    }
+    // Right band: top → bottom (skip top-right corner already painted)
+    let mut y = ly + b;
+    while y < ry - b {
+        let ye = (y + RAINBOW_SEG).min(ry - b);
+        fill!(RECT {
+            left: (rx - b).max(lx),
+            top: y,
+            right: rx,
+            bottom: ye
+        });
+        pos += ye - y;
+        y = ye;
+    }
+    // Bottom band: right → left (so hue continues flowing clockwise)
+    let mut x = rx;
+    while x > lx {
+        let xs = (x - RAINBOW_SEG).max(lx);
+        fill!(RECT {
+            left: xs,
+            top: (ry - b).max(ly),
+            right: x,
+            bottom: ry
+        });
+        pos += x - xs;
+        x = xs;
+    }
+    // Left band: bottom → top (skip corners already painted)
+    let mut y = ry - b;
+    while y > ly + b {
+        let ys = (y - RAINBOW_SEG).max(ly + b);
+        fill!(RECT {
+            left: lx,
+            top: ys,
+            right: (lx + b).min(rx),
+            bottom: y
+        });
+        pos += y - ys;
+        y = ys;
+    }
+}
+
 /// Per-overlay state kept alive via `GWLP_USERDATA`.
 struct Overlay {
     main: HWND,
@@ -63,7 +142,6 @@ struct Overlay {
     start: POINT,
     current: POINT,
     rect: RECT,
-    hue: u16,
 }
 
 thread_local! {
@@ -128,7 +206,6 @@ pub fn show(main_hwnd: HWND) {
             start: POINT::default(),
             current: POINT::default(),
             rect: RECT::default(),
-            hue: 0,
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
@@ -136,8 +213,6 @@ pub fn show(main_hwnd: HWND) {
         let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), OVERLAY_ALPHA, LWA_ALPHA);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetCapture(hwnd);
-        // Start the rainbow animation timer (~25 fps).
-        SetTimer(Some(hwnd), RAINBOW_TIMER_ID, 40, None);
     }
 }
 
@@ -212,14 +287,6 @@ unsafe extern "system" fn wnd_proc(
                 let _ = PostMessageW(Some(main), WM_APP_REGION_DONE, WPARAM(0), LPARAM(0));
                 LRESULT(0)
             }
-            WM_TIMER if wparam.0 == RAINBOW_TIMER_ID => {
-                st.hue = (st.hue + RAINBOW_STEP) % 360;
-                // Only invalidate the border strip area to avoid a full redraw
-                // every tick — redraw the entire window since the region rect
-                // changes anyway while dragging.
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                LRESULT(0)
-            }
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
@@ -249,24 +316,15 @@ unsafe extern "system" fn wnd_proc(
                     FillRect(hdc, &sel, sel_fill);
                     let _ = DeleteObject(sel_fill.into());
 
-                    // Four `FillRect` bands give a stable pixel-exact border
-                    // at any DPI — border colour cycles through the rainbow.
-                    let b = BORDER_THICKNESS;
-                    let color = hue_to_colorref(st.hue);
-                    let brush = CreateSolidBrush(color);
-
-                    FillRect(hdc, &RECT { left: lx, top: ly, right: rx, bottom: (ly + b).min(ry) }, brush);
-                    FillRect(hdc, &RECT { left: lx, top: (ry - b).max(ly), right: rx, bottom: ry }, brush);
-                    FillRect(hdc, &RECT { left: lx, top: ly, right: (lx + b).min(rx), bottom: ry }, brush);
-                    FillRect(hdc, &RECT { left: (rx - b).max(lx), top: ly, right: rx, bottom: ry }, brush);
-                    let _ = DeleteObject(brush.into());
+                    // Rainbow border: hue is proportional to perimeter position,
+                    // so all spectrum colours appear simultaneously around the rect.
+                    draw_rainbow_border(hdc, lx, ly, rx, ry, BORDER_THICKNESS);
                 }
 
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
             WM_DESTROY => {
-                let _ = KillTimer(Some(hwnd), RAINBOW_TIMER_ID);
                 let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
                 if raw != 0 {
                     drop(Box::from_raw(raw as *mut Overlay));
