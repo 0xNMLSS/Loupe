@@ -9,11 +9,11 @@ use windows::Win32::UI::Magnification::{
     WC_MAGNIFIERW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetWindowLongPtrW, GWL_EXSTYLE, GWLP_USERDATA, HMENU, HWND_TOP,
-    LoadCursorW, MoveWindow, PostMessageW, RegisterClassW, SetLayeredWindowAttributes,
-    SetWindowLongPtrW, SetWindowPos, CS_DBLCLKS, IDC_ARROW, LWA_ALPHA, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WINDOW_EX_STYLE, WM_ERASEBKGND, WM_LBUTTONDBLCLK,
-    WNDCLASSW, WS_CHILD, WS_VISIBLE, WS_EX_LAYERED,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GWLP_USERDATA, GetWindowLongPtrW,
+    HMENU, HWND_TOP, IDC_ARROW, LWA_ALPHA, LoadCursorW, MoveWindow, PostMessageW, RegisterClassW,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes,
+    SetWindowLongPtrW, SetWindowPos, WINDOW_EX_STYLE, WM_ERASEBKGND, WM_LBUTTONDBLCLK, WNDCLASSW,
+    WS_CHILD, WS_EX_LAYERED, WS_VISIBLE,
 };
 
 use windows::core::PCWSTR;
@@ -180,12 +180,8 @@ unsafe extern "system" fn hit_overlay_wnd_proc(
                 let host_isize = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
                 if host_isize != 0 {
                     let host = HWND(host_isize as *mut _);
-                    let _ = PostMessageW(
-                        Some(host),
-                        WM_APP_TOGGLE_FULLSCREEN,
-                        WPARAM(0),
-                        LPARAM(0),
-                    );
+                    let _ =
+                        PostMessageW(Some(host), WM_APP_TOGGLE_FULLSCREEN, WPARAM(0), LPARAM(0));
                 }
                 LRESULT(0)
             }

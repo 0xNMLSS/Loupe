@@ -26,16 +26,16 @@ use std::mem::size_of;
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    MONITOR_DEFAULTTONEAREST, MONITORINFO, GetMonitorInfoW, MonitorFromWindow,
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GWL_STYLE, GetClientRect, GetMessageW, GetWindowLongPtrW, GetWindowPlacement, HICON, HMENU,
-    HWND_TOP, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MSG, PostQuitMessage,
-    RegisterClassW, SET_WINDOW_POS_FLAGS, SW_HIDE, SW_SHOW, SetLayeredWindowAttributes,
-    SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
+    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWL_STYLE,
+    GetClientRect, GetMessageW, GetWindowLongPtrW, GetWindowPlacement, HICON, HMENU, HWND_TOP,
+    IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MSG, PostQuitMessage, RegisterClassW,
+    SET_WINDOW_POS_FLAGS, SW_HIDE, SW_SHOW, SetLayeredWindowAttributes, SetTimer,
+    SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
     WINDOWPLACEMENT, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP,
     WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
 };
@@ -216,9 +216,7 @@ fn create_main_window() -> Option<HWND> {
         let child = magnifier::create_child(hwnd, client, instance)?;
         let overlay = magnifier::create_hit_overlay(hwnd, client, instance);
         if overlay.is_none() {
-            eprintln!(
-                "loupe: warning: hit overlay unavailable; double-click fullscreen disabled"
-            );
+            eprintln!("loupe: warning: hit overlay unavailable; double-click fullscreen disabled");
         }
 
         let timer = SetTimer(Some(hwnd), REFRESH_TIMER_ID, REFRESH_TIMER_MS, None);
