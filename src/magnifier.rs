@@ -1,15 +1,31 @@
-use windows::Win32::Foundation::{HWND, RECT};
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
+
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
 use windows::Win32::UI::Magnification::{
     MAGTRANSFORM, MagInitialize, MagSetWindowSource, MagSetWindowTransform, MagUninitialize,
     WC_MAGNIFIERW,
 };
+use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, MoveWindow, WINDOW_EX_STYLE, WS_CHILD, WS_VISIBLE,
+    CreateWindowExW, GetSystemMetrics, MoveWindow, PostMessageW, SM_CXDOUBLECLK, SM_CYDOUBLECLK,
+    WINDOW_EX_STYLE, WM_LBUTTONDOWN, WS_CHILD, WS_VISIBLE,
 };
 use windows::core::PCWSTR;
 
 /// Child window id assigned to the magnifier control inside the host window.
 const MAG_CHILD_ID: isize = 0x1001;
+
+/// Posted to the host (main) window so it can toggle maximized / restored.
+/// Must match the handler in `main.rs`.
+pub const WM_APP_TOGGLE_FULLSCREEN: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 4;
+
+const MAG_DBLCLK_SUBCLASS_ID: usize = 0x4D4147; // 'MAG'
+
+thread_local! {
+    static MAG_LAST_CLICK: RefCell<Option<(Instant, i32, i32)>> = const { RefCell::new(None) };
+}
 
 /// Initialise the Magnification runtime. Must be called once before creating
 /// any magnifier window.
@@ -47,8 +63,64 @@ pub fn create_child(host: HWND, client: RECT) -> Option<HWND> {
         )
     };
     match hwnd {
-        Ok(h) if !h.is_invalid() => Some(h),
+        Ok(h) if !h.is_invalid() => {
+            unsafe {
+                let _ = SetWindowSubclass(
+                    h,
+                    Some(mag_dblclk_subclass_proc),
+                    MAG_DBLCLK_SUBCLASS_ID,
+                    host.0 as usize,
+                );
+            }
+            Some(h)
+        }
         _ => None,
+    }
+}
+
+unsafe extern "system" fn mag_dblclk_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    _wparam: WPARAM,
+    lparam: LPARAM,
+    _subclass_id: usize,
+    ref_data: usize,
+) -> LRESULT {
+    unsafe {
+        if msg == WM_LBUTTONDOWN {
+            let host = HWND(ref_data as *mut _);
+            let x = (lparam.0 as u32 & 0xFFFF) as i16 as i32;
+            let y = (((lparam.0 as u32) >> 16) & 0xFFFF) as i16 as i32;
+            let now = Instant::now();
+            let max_ms = GetDoubleClickTime().max(1) as u64;
+            let max_dist_x = GetSystemMetrics(SM_CXDOUBLECLK).max(1) / 2;
+            let max_dist_y = GetSystemMetrics(SM_CYDOUBLECLK).max(1) / 2;
+
+            let is_dbl = MAG_LAST_CLICK.with(|cell| {
+                let mut g = cell.borrow_mut();
+                let out = if let Some((t0, x0, y0)) = *g {
+                    let elapsed = now.saturating_duration_since(t0);
+                    let dx = (x - x0).abs();
+                    let dy = (y - y0).abs();
+                    elapsed <= Duration::from_millis(max_ms) && dx <= max_dist_x && dy <= max_dist_y
+                } else {
+                    false
+                };
+                if out {
+                    *g = None;
+                } else {
+                    *g = Some((now, x, y));
+                }
+                out
+            });
+
+            if is_dbl {
+                let _ = PostMessageW(Some(host), WM_APP_TOGGLE_FULLSCREEN, WPARAM(0), LPARAM(0));
+                return LRESULT(0);
+            }
+        }
+
+        DefSubclassProc(hwnd, msg, _wparam, lparam)
     }
 }
 

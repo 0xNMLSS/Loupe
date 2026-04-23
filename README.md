@@ -25,8 +25,16 @@ You need a Windows Rust **host** triple plus that toolchain’s C linker on
 
 ### A. MSVC (simplest if you already use Visual Studio / Build Tools)
 
-Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-with the **Desktop development with C++** workload (MSVC + Windows SDK). Then:
+`rustup default stable-x86_64-pc-windows-msvc` alone does **not** install the
+linker. You need **`link.exe`** from Microsoft’s C++ toolchain.
+
+1. Install [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+   and select the **Desktop development with C++** workload (MSVC toolset +
+   Windows SDK). A full Visual Studio install with that workload also works.
+2. Open a **new** terminal (or use **Developer PowerShell for VS** / **x64
+   Native Tools Command Prompt for VS** from the Start menu — they put
+   `link.exe` on `PATH` automatically).
+3. Then:
 
 ```powershell
 rustup default stable-x86_64-pc-windows-msvc
@@ -87,9 +95,18 @@ without any extra setup. Common symptoms when this step is skipped:
 
 | Error | Cause |
 |---|---|
-| `cargo: command not found` (Bash) or `CommandNotFoundException` (PS) | `~\.cargo\bin` not on `PATH` |
-| `error calling dlltool 'dlltool.exe': program not found` | wrong toolchain (`gnu` instead of `gnullvm`) |
+| `cargo: command not found` (Bash) or `CommandNotFoundException` (PS) | `~\.cargo\bin` not on **user** `PATH` — run `rustup` installer’s PATH step, or add it manually and **open a new terminal** |
+| `lld: error: unable to find library -lgcc_eh` / `-lgcc` | **GNU / gnullvm**: linker sees `clang`/`lld` but not MinGW **runtime libs** (incomplete LLVM-MinGW tree, or `bin` on `PATH` without matching `lib\`). Fix: use a **full** [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) unpack (same root for `bin\` + `x86_64-w64-mingw32\lib\`), or build from **MSYS2 UCRT64** with the full `mingw-w64-ucrt-x86_64-toolchain`, or switch to **A. MSVC** (`rustup default stable-x86_64-pc-windows-msvc`). |
+| `error calling dlltool 'dlltool.exe': program not found` | MinGW `bin` not on `PATH` — see **B** |
 | `linker 'x86_64-w64-mingw32-clang' not found` | LLVM-MinGW `bin\` not on `PATH` |
+| `linker link.exe not found` | **MSVC** target but **Visual C++ Build Tools** (or VS with C++ workload) not installed, or you are in plain PowerShell without MSVC on `PATH`. Install the workload above, or build from **Developer PowerShell for VS** / **x64 Native Tools Command Prompt**. |
+
+**Quick check (PowerShell)** — `cargo` only for this window:
+
+```powershell
+$env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
+cargo --version
+```
 
 ---
 
@@ -138,7 +155,7 @@ assets/
   loupe.ico        application icon (generated, see make_icon.ps1)
   make_icon.ps1    GDI+ script that (re)generates loupe.ico
 app.rc             resource script: embeds loupe.ico as resource id 1
-build.rs           compiles app.rc via the embed-resource crate
+build.rs           embeds `app.rc` (MSVC: embed-resource + `rc.exe`; GNU: `windres`)
 ```
 
 ## Regenerating the icon

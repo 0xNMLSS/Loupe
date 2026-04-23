@@ -7,7 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **README — Build**: Document MSVC, GNU (MSYS2), and LLVM-MinGW (gnullvm) setup;
+  explain **linker `x86_64-w64-mingw32-clang` not found** and `rustup default`
+  alternatives; GNU section notes **`dlltool.exe` not found** (MinGW `bin` must
+  be on `PATH` outside MSYS2).
+
+### Fixed
+
+- **Docs — build failures on Windows**: README troubleshooting now covers
+  `cargo` not on `PATH` (PowerShell), **`link.exe` not found** (MSVC tools not
+  installed / wrong shell), and **`unable to find library -lgcc_eh` / `-lgcc`**
+  (GNU / LLVM-MinGW layout).
+
+- **GNU / gnullvm builds — `windres` not found**: `embed-resource` only invoked
+  plain `windres` on non-MSVC Windows, which often fails under Git Bash when
+  MinGW `bin` is not on `PATH`. `build.rs` now resolves `windres` via `WINDRES`,
+  `PATH`, `x86_64-w64-mingw32-windres`-style names, and common MSYS2 `bin`
+  directories, while keeping `embed-resource` for MSVC (`rc.exe`).
+
 ### Added
+
+- **Double-click to maximize**: double-click the magnifier pane to toggle
+  between maximized (fills the work area on the current monitor) and the
+  previous window size. Implemented via a window subclass on `WC_MAGNIFIER`
+  that posts to the host window (`src/magnifier.rs`, `src/main.rs`).
 
 - **Hotkey persistence** (`src/config.rs`). The bound hotkey is saved to
   `%APPDATA%\loupe\config.toml` immediately after a successful

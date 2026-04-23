@@ -25,14 +25,16 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-    GetMessageW, HICON, HMENU, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MSG,
-    PostQuitMessage, RegisterClassW, SW_HIDE, SW_SHOW, SetLayeredWindowAttributes, SetTimer,
-    ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP,
-    WM_RBUTTONUP, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
+    GetMessageW, HICON, HMENU, IDC_ARROW, IsZoomed, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW,
+    MSG, PostQuitMessage, RegisterClassW, SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW,
+    SetLayeredWindowAttributes, SetTimer, ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND,
+    WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
+    WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PCWSTR;
 
 use crate::hotkey_bind::WM_APP_HOTKEY_BOUND;
+use crate::magnifier::WM_APP_TOGGLE_FULLSCREEN;
 use crate::region::WM_APP_REGION_DONE;
 use crate::tray::{IDM_BIND_HOTKEY, IDM_NEW_LENS, IDM_QUIT, WM_APP_TRAY};
 
@@ -299,6 +301,14 @@ unsafe extern "system" fn main_wnd_proc(
                     && let Some(rect) = region::take_last()
                 {
                     apply_source(hwnd, rect);
+                }
+                LRESULT(0)
+            }
+            x if x == WM_APP_TOGGLE_FULLSCREEN => {
+                if IsZoomed(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                } else {
+                    let _ = ShowWindow(hwnd, SW_MAXIMIZE);
                 }
                 LRESULT(0)
             }
