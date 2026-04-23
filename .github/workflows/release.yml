@@ -63,11 +63,11 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-features -- -D warnings
 
       # ── Release build ─────────────────────────────────────────────────────────
       - name: cargo build --release
-        run: cargo build --release
+        run: cargo build --release --features hide_console
 
       # ── Rename artifact with version suffix ───────────────────────────────────
       - name: Prepare artifact

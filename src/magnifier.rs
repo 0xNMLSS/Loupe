@@ -1,30 +1,72 @@
-use std::cell::RefCell;
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime;
+use windows::Win32::Foundation::{
+    COLORREF, ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT,
+    WPARAM,
+};
 use windows::Win32::UI::Magnification::{
     MAGTRANSFORM, MagInitialize, MagSetWindowSource, MagSetWindowTransform, MagUninitialize,
     WC_MAGNIFIERW,
 };
-use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, GetSystemMetrics, MoveWindow, PostMessageW, SM_CXDOUBLECLK, SM_CYDOUBLECLK,
-    WINDOW_EX_STYLE, WM_LBUTTONDOWN, WS_CHILD, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, GetWindowLongPtrW, GWL_EXSTYLE, GWLP_USERDATA, HMENU, HWND_TOP,
+    LoadCursorW, MoveWindow, PostMessageW, RegisterClassW, SetLayeredWindowAttributes,
+    SetWindowLongPtrW, SetWindowPos, CS_DBLCLKS, IDC_ARROW, LWA_ALPHA, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WINDOW_EX_STYLE, WM_ERASEBKGND, WM_LBUTTONDBLCLK,
+    WNDCLASSW, WS_CHILD, WS_VISIBLE, WS_EX_LAYERED,
 };
+
 use windows::core::PCWSTR;
+
+use crate::wstr;
 
 /// Child window id assigned to the magnifier control inside the host window.
 const MAG_CHILD_ID: isize = 0x1001;
 
-/// Posted to the host (main) window so it can toggle maximized / restored.
+/// Invisible layered child on top of the magnifier — receives double-clicks.
+/// `WC_MAGNIFIER` does not reliably participate in hit-testing; input passes
+/// through to the desktop, so we cannot subclass it for click gestures.
+const HIT_OVERLAY_CHILD_ID: isize = 0x1002;
+
+const HIT_OVERLAY_CLASS: &str = "loupe.hit";
+
+/// Leaked wide name + one-time `RegisterClassW`. `WNDCLASSW::lpszClassName` must
+/// point to memory that stays valid for the process lifetime.
+/// Stored as `usize` because raw pointers are not `Send`/`Sync` in `static`s on
+/// this edition.
+static HIT_OVERLAY_CLASS_NAME: OnceLock<usize> = OnceLock::new();
+
+/// Posted to the host (main) window so it can toggle borderless fullscreen.
 /// Must match the handler in `main.rs`.
 pub const WM_APP_TOGGLE_FULLSCREEN: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 4;
 
-const MAG_DBLCLK_SUBCLASS_ID: usize = 0x4D4147; // 'MAG'
+/// Nearly invisible (alpha) so the magnified bitmap remains visible while the
+/// overlay still receives mouse input.
+const HIT_OVERLAY_ALPHA: u8 = 6;
 
-thread_local! {
-    static MAG_LAST_CLICK: RefCell<Option<(Instant, i32, i32)>> = const { RefCell::new(None) };
+/// Registers `loupe.hit` once; `instance` must be the module handle used for `CreateWindowExW`.
+fn hit_overlay_class_name(instance: HINSTANCE) -> PCWSTR {
+    let bits = *HIT_OVERLAY_CLASS_NAME.get_or_init(|| unsafe {
+        let name: &'static mut [u16] = Box::leak(wstr(HIT_OVERLAY_CLASS).into_boxed_slice());
+        let wc = WNDCLASSW {
+            style: CS_DBLCLKS,
+            lpfnWndProc: Some(hit_overlay_wnd_proc),
+            hInstance: instance,
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            lpszClassName: PCWSTR(name.as_ptr()),
+            ..Default::default()
+        };
+        let atom = RegisterClassW(&wc);
+        if atom == 0 {
+            let err = GetLastError();
+            if err != ERROR_CLASS_ALREADY_EXISTS {
+                eprintln!("loupe: RegisterClassW({HIT_OVERLAY_CLASS}) failed: {err:?}");
+                return 0;
+            }
+        }
+        name.as_ptr() as usize
+    });
+    PCWSTR(bits as *const u16)
 }
 
 /// Initialise the Magnification runtime. Must be called once before creating
@@ -41,9 +83,9 @@ pub fn shutdown() {
 }
 
 /// Create the `WC_MAGNIFIER` child filling the host's client area.
-pub fn create_child(host: HWND, client: RECT) -> Option<HWND> {
-    let width = client.right - client.left;
-    let height = client.bottom - client.top;
+pub fn create_child(host: HWND, client: RECT, instance: HINSTANCE) -> Option<HWND> {
+    let width = (client.right - client.left).max(1);
+    let height = (client.bottom - client.top).max(1);
     let hwnd = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
@@ -55,81 +97,125 @@ pub fn create_child(host: HWND, client: RECT) -> Option<HWND> {
             width,
             height,
             Some(host),
-            Some(windows::Win32::UI::WindowsAndMessaging::HMENU(
-                MAG_CHILD_ID as *mut _,
-            )),
-            None,
+            Some(HMENU(MAG_CHILD_ID as *mut _)),
+            Some(instance),
             None,
         )
     };
     match hwnd {
-        Ok(h) if !h.is_invalid() => {
-            unsafe {
-                let _ = SetWindowSubclass(
-                    h,
-                    Some(mag_dblclk_subclass_proc),
-                    MAG_DBLCLK_SUBCLASS_ID,
-                    host.0 as usize,
-                );
-            }
-            Some(h)
+        Ok(h) if !h.is_invalid() => Some(h),
+        _ => {
+            let err = unsafe { GetLastError() };
+            eprintln!("loupe: CreateWindowExW(WC_MAGNIFIER) failed: {err:?}");
+            None
         }
-        _ => None,
     }
 }
 
-unsafe extern "system" fn mag_dblclk_subclass_proc(
+/// Layered, almost-transparent child above the magnifier; captures double-clicks.
+pub fn create_hit_overlay(host: HWND, client: RECT, instance: HINSTANCE) -> Option<HWND> {
+    let width = (client.right - client.left).max(1);
+    let height = (client.bottom - client.top).max(1);
+    let class = hit_overlay_class_name(instance);
+    if class.is_null() {
+        eprintln!("loupe: hit overlay class not registered; double-click fullscreen disabled");
+        return None;
+    }
+    // Do not pass WS_EX_LAYERED / WS_EX_NOACTIVATE at creation: combined extended
+    // styles on a child can make `CreateWindowExW` fail with ERROR_INVALID_HANDLE (6).
+    // Apply WS_EX_LAYERED after create, then layered attributes (standard pattern).
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            class,
+            PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE,
+            0,
+            0,
+            width,
+            height,
+            Some(host),
+            Some(HMENU(HIT_OVERLAY_CHILD_ID as *mut _)),
+            Some(instance),
+            None,
+        )
+    };
+    let h = match hwnd {
+        Ok(w) if !w.is_invalid() => w,
+        _ => {
+            let err = unsafe { GetLastError() };
+            eprintln!(
+                "loupe: CreateWindowExW(hit overlay) failed: {err:?} (see Win32 ERROR_* for code)"
+            );
+            return None;
+        }
+    };
+    unsafe {
+        let _ = SetWindowLongPtrW(h, GWLP_USERDATA, host.0 as isize);
+        let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+        SetWindowLongPtrW(h, GWL_EXSTYLE, ex | (WS_EX_LAYERED.0 as isize));
+        let _ = SetLayeredWindowAttributes(h, COLORREF(0), HIT_OVERLAY_ALPHA, LWA_ALPHA);
+        let _ = SetWindowPos(
+            h,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+    Some(h)
+}
+
+unsafe extern "system" fn hit_overlay_wnd_proc(
     hwnd: HWND,
     msg: u32,
-    _wparam: WPARAM,
+    wparam: WPARAM,
     lparam: LPARAM,
-    _subclass_id: usize,
-    ref_data: usize,
 ) -> LRESULT {
     unsafe {
-        if msg == WM_LBUTTONDOWN {
-            let host = HWND(ref_data as *mut _);
-            let x = (lparam.0 as u32 & 0xFFFF) as i16 as i32;
-            let y = (((lparam.0 as u32) >> 16) & 0xFFFF) as i16 as i32;
-            let now = Instant::now();
-            let max_ms = GetDoubleClickTime().max(1) as u64;
-            let max_dist_x = GetSystemMetrics(SM_CXDOUBLECLK).max(1) / 2;
-            let max_dist_y = GetSystemMetrics(SM_CYDOUBLECLK).max(1) / 2;
-
-            let is_dbl = MAG_LAST_CLICK.with(|cell| {
-                let mut g = cell.borrow_mut();
-                let out = if let Some((t0, x0, y0)) = *g {
-                    let elapsed = now.saturating_duration_since(t0);
-                    let dx = (x - x0).abs();
-                    let dy = (y - y0).abs();
-                    elapsed <= Duration::from_millis(max_ms) && dx <= max_dist_x && dy <= max_dist_y
-                } else {
-                    false
-                };
-                if out {
-                    *g = None;
-                } else {
-                    *g = Some((now, x, y));
+        match msg {
+            WM_LBUTTONDBLCLK => {
+                let host_isize = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+                if host_isize != 0 {
+                    let host = HWND(host_isize as *mut _);
+                    let _ = PostMessageW(
+                        Some(host),
+                        WM_APP_TOGGLE_FULLSCREEN,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
                 }
-                out
-            });
-
-            if is_dbl {
-                let _ = PostMessageW(Some(host), WM_APP_TOGGLE_FULLSCREEN, WPARAM(0), LPARAM(0));
-                return LRESULT(0);
+                LRESULT(0)
             }
+            WM_ERASEBKGND => LRESULT(1),
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
-
-        DefSubclassProc(hwnd, msg, _wparam, lparam)
     }
 }
 
-/// Resize the magnifier child to fully cover its host's client area.
+/// Resize a child to fully cover its host's client area.
 pub fn resize_to(child: HWND, client: RECT) {
     let width = client.right - client.left;
     let height = client.bottom - client.top;
     unsafe {
         let _ = MoveWindow(child, 0, 0, width, height, true);
+    }
+}
+
+/// Keep the hit overlay above the magnifier after `WM_SIZE` (sibling z-order).
+pub fn elevate_above_siblings(hwnd: HWND) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
     }
 }
 

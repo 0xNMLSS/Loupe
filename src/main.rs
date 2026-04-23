@@ -7,7 +7,9 @@
 // that mirrors the selected source rect at 60 Hz.
 
 #![cfg(windows)]
-#![windows_subsystem = "windows"]
+// Default: console subsystem so `eprintln!` / local dev logs show in the terminal.
+// Release artifacts (GitHub Actions) build with `--features hide_console`.
+#![cfg_attr(feature = "hide_console", windows_subsystem = "windows")]
 
 mod config;
 mod dpi;
@@ -19,17 +21,23 @@ mod tray;
 
 use std::cell::RefCell;
 
+use std::mem::size_of;
+
 use windows::Win32::Foundation::COLORREF;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, GetMonitorInfoW, MonitorFromWindow,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-    GetMessageW, HICON, HMENU, IDC_ARROW, IsZoomed, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW,
-    MSG, PostQuitMessage, RegisterClassW, SW_HIDE, SW_MAXIMIZE, SW_RESTORE, SW_SHOW,
-    SetLayeredWindowAttributes, SetTimer, ShowWindow, TranslateMessage, WM_CLOSE, WM_COMMAND,
-    WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
+    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GWL_STYLE, GetClientRect, GetMessageW, GetWindowLongPtrW, GetWindowPlacement, HICON, HMENU,
+    HWND_TOP, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MSG, PostQuitMessage,
+    RegisterClassW, SET_WINDOW_POS_FLAGS, SW_HIDE, SW_SHOW, SetLayeredWindowAttributes,
+    SetTimer, SetWindowLongPtrW, SetWindowPlacement, SetWindowPos, ShowWindow, TranslateMessage,
+    WINDOWPLACEMENT, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP,
+    WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PCWSTR;
 
@@ -72,12 +80,18 @@ pub fn load_app_icon() -> HICON {
 struct AppState {
     main: HWND,
     mag_child: Option<HWND>,
+    /// Transparent layered child above the magnifier; captures double-clicks.
+    hit_overlay: Option<HWND>,
     timer_id: Option<usize>,
     current_source: Option<RECT>,
     /// Whether a global hotkey is currently registered.
     hotkey_registered: bool,
     /// The currently bound hotkey combo, if any.
     current_hotkey: Option<(HOT_KEY_MODIFIERS, u32)>,
+    /// True while the window is in borderless-fullscreen mode.
+    is_fullscreen: bool,
+    /// Window style and placement saved before entering fullscreen.
+    pre_fullscreen: Option<(isize, WINDOWPLACEMENT)>,
 }
 
 thread_local! {
@@ -109,10 +123,13 @@ fn main() {
         *s.borrow_mut() = Some(AppState {
             main,
             mag_child: None,
+            hit_overlay: None,
             timer_id: None,
             current_source: None,
             hotkey_registered: false,
             current_hotkey: None,
+            is_fullscreen: false,
+            pre_fullscreen: None,
         });
     });
 
@@ -157,11 +174,12 @@ fn create_main_window() -> Option<HWND> {
     let class = wstr(MAIN_CLASS);
     let title = wstr("Loupe");
     unsafe {
-        let hinstance = GetModuleHandleW(None).ok()?;
+        let hmodule = GetModuleHandleW(None).ok()?;
+        let instance: HINSTANCE = hmodule.into();
         let icon = load_app_icon();
         let wc = WNDCLASSW {
             lpfnWndProc: Some(main_wnd_proc),
-            hInstance: hinstance.into(),
+            hInstance: instance,
             lpszClassName: PCWSTR(class.as_ptr()),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             hIcon: icon,
@@ -181,7 +199,7 @@ fn create_main_window() -> Option<HWND> {
             480,
             None,
             Some(HMENU::default()),
-            Some(hinstance.into()),
+            Some(instance),
             None,
         )
         .ok()?;
@@ -195,30 +213,37 @@ fn create_main_window() -> Option<HWND> {
 
         let mut client = RECT::default();
         let _ = GetClientRect(hwnd, &mut client);
-        let child = magnifier::create_child(hwnd, client)?;
+        let child = magnifier::create_child(hwnd, client, instance)?;
+        let overlay = magnifier::create_hit_overlay(hwnd, client, instance);
+        if overlay.is_none() {
+            eprintln!(
+                "loupe: warning: hit overlay unavailable; double-click fullscreen disabled"
+            );
+        }
 
         let timer = SetTimer(Some(hwnd), REFRESH_TIMER_ID, REFRESH_TIMER_MS, None);
-        set_post_create(child, timer);
+        set_post_create(child, overlay, timer);
 
         Some(hwnd)
     }
 }
 
-fn set_post_create(child: HWND, timer: usize) {
+fn set_post_create(child: HWND, overlay: Option<HWND>, timer: usize) {
     POST_CREATE.with(|c| {
-        *c.borrow_mut() = Some((child, timer));
+        *c.borrow_mut() = Some((child, overlay, timer));
     });
 }
 
 thread_local! {
-    static POST_CREATE: RefCell<Option<(HWND, usize)>> = const { RefCell::new(None) };
+    static POST_CREATE: RefCell<Option<(HWND, Option<HWND>, usize)>> = const { RefCell::new(None) };
 }
 
 fn run_message_loop() {
-    if let Some((child, timer)) = POST_CREATE.with(|c| c.borrow_mut().take()) {
+    if let Some((child, overlay, timer)) = POST_CREATE.with(|c| c.borrow_mut().take()) {
         STATE.with(|s| {
             if let Some(st) = s.borrow_mut().as_mut() {
                 st.mag_child = Some(child);
+                st.hit_overlay = overlay;
                 st.timer_id = Some(timer);
             }
         });
@@ -305,11 +330,7 @@ unsafe extern "system" fn main_wnd_proc(
                 LRESULT(0)
             }
             x if x == WM_APP_TOGGLE_FULLSCREEN => {
-                if IsZoomed(hwnd).as_bool() {
-                    let _ = ShowWindow(hwnd, SW_RESTORE);
-                } else {
-                    let _ = ShowWindow(hwnd, SW_MAXIMIZE);
-                }
+                toggle_fullscreen(hwnd);
                 LRESULT(0)
             }
             WM_SIZE => {
@@ -318,12 +339,16 @@ unsafe extern "system" fn main_wnd_proc(
                 let cw = client.right - client.left;
                 let ch = client.bottom - client.top;
                 STATE.with(|s| {
-                    if let Some(st) = s.borrow().as_ref()
-                        && let Some(c) = st.mag_child
-                    {
-                        magnifier::resize_to(c, client);
-                        if let Some(src) = st.current_source {
-                            magnifier::fit_source(c, cw, ch, src);
+                    if let Some(st) = s.borrow().as_ref() {
+                        if let Some(c) = st.mag_child {
+                            magnifier::resize_to(c, client);
+                            if let Some(src) = st.current_source {
+                                magnifier::fit_source(c, cw, ch, src);
+                            }
+                        }
+                        if let Some(o) = st.hit_overlay {
+                            magnifier::resize_to(o, client);
+                            magnifier::elevate_above_siblings(o);
                         }
                     }
                 });
@@ -352,6 +377,89 @@ unsafe extern "system" fn main_wnd_proc(
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+/// Toggle borderless fullscreen on `hwnd`.
+///
+/// Entering: saves the current window style and placement, strips
+/// `WS_OVERLAPPEDWINDOW` (title bar + borders), then calls `SetWindowPos`
+/// to cover the entire monitor rectangle.
+///
+/// Exiting: restores the saved style via `SetWindowLongPtrW` with
+/// `SWP_FRAMECHANGED`, then calls `SetWindowPlacement` to return to the
+/// previous size and position.
+fn toggle_fullscreen(hwnd: HWND) {
+    let currently = STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|st| (st.is_fullscreen, st.pre_fullscreen))
+    });
+    let Some((is_fullscreen, pre)) = currently else {
+        return;
+    };
+
+    unsafe {
+        if is_fullscreen {
+            // Restore windowed mode.
+            if let Some((saved_style, saved_wp)) = pre {
+                SetWindowLongPtrW(hwnd, GWL_STYLE, saved_style);
+                let _ = SetWindowPlacement(hwnd, &saved_wp);
+                // SWP_FRAMECHANGED forces re-evaluation of the new style.
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOP),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SET_WINDOW_POS_FLAGS(0x0020 | 0x0200 | 0x0001 | 0x0002),
+                    // SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOSIZE | SWP_NOMOVE
+                );
+            }
+            STATE.with(|s| {
+                if let Some(st) = s.borrow_mut().as_mut() {
+                    st.is_fullscreen = false;
+                    st.pre_fullscreen = None;
+                }
+            });
+        } else {
+            // Enter borderless fullscreen.
+            let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+            let mut wp = WINDOWPLACEMENT {
+                length: size_of::<WINDOWPLACEMENT>() as u32,
+                ..Default::default()
+            };
+            let _ = GetWindowPlacement(hwnd, &mut wp);
+
+            // Identify which monitor the window lives on.
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let _ = GetMonitorInfoW(monitor, &mut mi);
+            let r = mi.rcMonitor;
+
+            // Strip the frame style so SetWindowPos gives us a bare surface.
+            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_OVERLAPPEDWINDOW.0 as isize));
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOP),
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                SET_WINDOW_POS_FLAGS(0x0020 | 0x0200), // SWP_FRAMECHANGED | SWP_NOOWNERZORDER
+            );
+
+            STATE.with(|s| {
+                if let Some(st) = s.borrow_mut().as_mut() {
+                    st.is_fullscreen = true;
+                    st.pre_fullscreen = Some((style, wp));
+                }
+            });
         }
     }
 }

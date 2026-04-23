@@ -9,8 +9,10 @@ always-on-top window. Built in Rust on top of the Win32 Magnification API
 
 - Per-monitor DPI v2 awareness — sharp on any scaling factor.
 - Always-on-top, resizable, draggable magnifier window. Double-click the
-  magnified view to maximize (fullscreen on the current monitor); double-click
-  again to restore.
+  magnified view to enter borderless fullscreen (no title bar, covers the
+  entire monitor); double-click again to restore. (A nearly invisible layered
+  child sits above `WC_MAGNIFIER` to receive the double-click — the magnifier
+  control itself does not get mouse hits.)
 - Drag-to-select source rectangle on a transparent fullscreen overlay with a
   static rainbow border.
 - Live update of the magnified view (~60 Hz) as the source area changes.
@@ -129,7 +131,23 @@ The binary lands at `target\release\loupe.exe`.
 ## Run
 
 ```powershell
+cargo run
+# or
 cargo run --release
+```
+
+By default the binary is linked as a **console** app so `eprintln!` and other
+stderr output appear in the **same terminal window** you ran `cargo run` from
+(PowerShell, cmd, Windows Terminal, etc.). There is no separate “debug cmd”
+window unless you start one yourself (e.g. open `cmd.exe` and run
+`target\release\loupe.exe` there).
+
+To build a **GUI-only** executable (no extra console window when double-clicking
+`loupe.exe`), pass the `hide_console` feature (this is what GitHub Actions
+release uses):
+
+```powershell
+cargo build --release --features hide_console
 ```
 
 Right-click the tray icon → *New loupe*, drag a rectangle on screen, release
@@ -171,7 +189,7 @@ automatically.
 
 ```powershell
 cargo fmt --check
-cargo clippy -- -D warnings
+cargo clippy --all-features -- -D warnings
 cargo build
 ```
 

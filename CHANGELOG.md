@@ -9,12 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Windows subsystem**: Local `cargo run` / `cargo build` now keeps the **console**
+  attached by default so logs (`eprintln!`, etc.) are visible. Release builds
+  use Cargo feature **`hide_console`** (`#![windows_subsystem = "windows"]`);
+  GitHub Actions `release.yml` runs `cargo build --release --features hide_console`.
+  `cargo clippy` in CI uses `--all-features` so both configurations are checked.
+
 - **README — Build**: Document MSVC, GNU (MSYS2), and LLVM-MinGW (gnullvm) setup;
   explain **linker `x86_64-w64-mingw32-clang` not found** and `rustup default`
   alternatives; GNU section notes **`dlltool.exe` not found** (MinGW `bin` must
   be on `PATH` outside MSYS2).
 
 ### Fixed
+
+- **Main window creation failed** (`failed to create main window`): child
+  `CreateWindowExW` calls for `WC_MAGNIFIER` and the hit-test overlay now pass
+  the module **`HINSTANCE`** (`Some(instance)` instead of `None`), matching the
+  Microsoft Magnification sample. If the overlay still cannot be created, the
+  app starts without it and prints a warning (double-click fullscreen disabled)
+  instead of aborting the whole host window.
+
+- **Hit overlay `CreateWindowExW` failed with ERROR_INVALID_HANDLE (6)**:
+  creating the child with `WS_EX_LAYERED | WS_EX_NOACTIVATE` was rejected on
+  some setups. The overlay is now created as a normal child, then
+  `WS_EX_LAYERED` is applied via `GWL_EXSTYLE` before `SetLayeredWindowAttributes`.
 
 - **Docs — build failures on Windows**: README troubleshooting now covers
   `cargo` not on `PATH` (PowerShell), **`link.exe` not found** (MSVC tools not
@@ -29,10 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Double-click to maximize**: double-click the magnifier pane to toggle
-  between maximized (fills the work area on the current monitor) and the
-  previous window size. Implemented via a window subclass on `WC_MAGNIFIER`
-  that posts to the host window (`src/magnifier.rs`, `src/main.rs`).
+- **Double-click for borderless fullscreen**: double-click the magnified view
+  to toggle borderless fullscreen (strips title bar and borders, covers the
+  entire monitor). The window style and placement are saved before entering
+  fullscreen and fully restored on the second double-click.
+  `WC_MAGNIFIER` does not receive mouse hits (input passes through), so a
+  nearly transparent layered child (`loupe.hit`, `CS_DBLCLKS`) sits above the
+  magnifier, handles `WM_LBUTTONDBLCLK`, and posts `WM_APP_TOGGLE_FULLSCREEN`
+  to the host (`src/magnifier.rs`, `src/main.rs`).
 
 - **Hotkey persistence** (`src/config.rs`). The bound hotkey is saved to
   `%APPDATA%\loupe\config.toml` immediately after a successful

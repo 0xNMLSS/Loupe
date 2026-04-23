@@ -6,6 +6,11 @@ description = "A lightweight Windows magnifier: select a screen region and view 
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+# Omit on local builds: a console window stays attached for `eprintln!` / debugging.
+# Enable for shipped `.exe` (see `.github/workflows/release.yml`).
+hide_console = []
+
 [dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
