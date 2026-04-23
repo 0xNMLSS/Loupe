@@ -20,6 +20,7 @@ use std::cell::RefCell;
 
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
@@ -72,6 +73,8 @@ struct AppState {
     current_source: Option<RECT>,
     /// Whether a global hotkey is currently registered.
     hotkey_registered: bool,
+    /// The currently bound hotkey combo, if any.
+    current_hotkey: Option<(HOT_KEY_MODIFIERS, u32)>,
 }
 
 thread_local! {
@@ -106,6 +109,7 @@ fn main() {
             timer_id: None,
             current_source: None,
             hotkey_registered: false,
+            current_hotkey: None,
         });
     });
 
@@ -237,7 +241,12 @@ unsafe extern "system" fn main_wnd_proc(
                 let id = (wparam.0 as u32) & 0xFFFF;
                 match id {
                     IDM_NEW_LENS => region::show(hwnd),
-                    IDM_BIND_HOTKEY => hotkey_bind::show(hwnd),
+                    IDM_BIND_HOTKEY => {
+                        let current = STATE.with(|s| {
+                            s.borrow().as_ref().and_then(|st| st.current_hotkey)
+                        });
+                        hotkey_bind::show(hwnd, current);
+                    }
                     IDM_QUIT => {
                         let _ = DestroyWindow(hwnd);
                     }
@@ -254,7 +263,9 @@ unsafe extern "system" fn main_wnd_proc(
                                 hotkey::unregister(st.main);
                             }
                             st.hotkey_registered = hotkey::register(st.main, mods, vkey);
-                            if !st.hotkey_registered {
+                            if st.hotkey_registered {
+                                st.current_hotkey = Some((mods, vkey));
+                            } else {
                                 eprintln!("lens: hotkey already in use by another app");
                             }
                         }

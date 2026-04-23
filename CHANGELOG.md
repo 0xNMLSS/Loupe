@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hotkey bind dialog — text truncated**: window was too short (130 px) to show all
+  instructions. Increased to 200 × 400 px so all text fits comfortably.
+- **Hotkey bind dialog — no current binding shown**: dialog now displays
+  "Current shortcut: Ctrl+Alt+F1" (or "(none — not set)") so the user always
+  knows what shortcut is currently active. Uses `GetKeyNameTextW` +
+  `MapVirtualKeyW` for locale-aware key labels.
+- `AppState` now stores `current_hotkey: Option<(HOT_KEY_MODIFIERS, u32)>`
+  updated on every successful `RegisterHotKey` and passed into
+  `hotkey_bind::show()`.
+
 ### Changed
 
 - Region-selection overlay is now fully opaque (removed `WS_EX_LAYERED` /

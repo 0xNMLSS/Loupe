@@ -4,15 +4,16 @@
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DT_CENTER, DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint,
-    FillRect, PAINTSTRUCT, SetBkMode, SetTextColor, TRANSPARENT,
+    BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, PAINTSTRUCT,
+    SetBkMode, SetTextColor, TRANSPARENT, DT_WORDBREAK,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT,
+    GetKeyNameTextW, GetKeyState, HOT_KEY_MODIFIERS, MAPVK_VK_TO_VSC, MOD_ALT, MOD_CONTROL,
+    MOD_SHIFT, MapVirtualKeyW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetClientRect, GetSystemMetrics,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetSystemMetrics, GWLP_USERDATA,
     GetWindowLongPtrW, HMENU, IDC_ARROW, LoadCursorW, PostMessageW, RegisterClassExW, SM_CXSCREEN,
     SM_CYSCREEN, SW_SHOW, SetWindowLongPtrW, ShowWindow, WM_APP, WM_DESTROY, WM_KEYDOWN, WM_PAINT,
     WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU,
@@ -23,8 +24,8 @@ use crate::wstr;
 
 /// Posted to the main window when the user completes or cancels a bind.
 ///
-/// `wparam == 1`:  binding accepted;  `lparam` carries the packed combo.
-/// `wparam == 0`:  user pressed Escape; `lparam` is 0.
+/// `wparam == 1`: accepted; `lparam` carries the packed combo.
+/// `wparam == 0`: Escape pressed; `lparam` is 0.
 pub const WM_APP_HOTKEY_BOUND: u32 = WM_APP + 3;
 
 /// Pack `(HOT_KEY_MODIFIERS, vkey)` into an `LPARAM`.
@@ -38,9 +39,41 @@ pub fn unpack(lp: LPARAM) -> (HOT_KEY_MODIFIERS, u32) {
     (HOT_KEY_MODIFIERS(v >> 16), v & 0xFFFF)
 }
 
+/// Build a human-readable string like "Ctrl+Alt+F1" from a binding.
+pub fn format_binding(mods: HOT_KEY_MODIFIERS, vkey: u32) -> String {
+    let mut s = String::new();
+    if mods.0 & MOD_CONTROL.0 != 0 {
+        s.push_str("Ctrl+");
+    }
+    if mods.0 & MOD_ALT.0 != 0 {
+        s.push_str("Alt+");
+    }
+    if mods.0 & MOD_SHIFT.0 != 0 {
+        s.push_str("Shift+");
+    }
+    // MapVirtualKeyW → scan code → GetKeyNameTextW → key label.
+    let scan = unsafe { MapVirtualKeyW(vkey, MAPVK_VK_TO_VSC) };
+    // Bit 25 = "don't distinguish left/right" so we get "Ctrl" not "Left Ctrl".
+    let lp = ((scan << 16) | (1 << 25)) as i32;
+    let mut buf = [0u16; 64];
+    let n = unsafe { GetKeyNameTextW(lp, &mut buf) } as usize;
+    if n > 0 {
+        s.push_str(&String::from_utf16_lossy(&buf[..n]));
+    } else {
+        s.push_str(&format!("VK{:#04X}", vkey));
+    }
+    s
+}
+
 const BIND_CLASS: &str = "lens.hotkey.bind";
-const BIND_W: i32 = 360;
-const BIND_H: i32 = 130;
+const BIND_W: i32 = 400;
+const BIND_H: i32 = 200;
+
+/// State kept in `GWLP_USERDATA` for the bind window.
+struct BindState {
+    main: HWND,
+    current: Option<(HOT_KEY_MODIFIERS, u32)>,
+}
 
 fn register_class() {
     let class = wstr(BIND_CLASS);
@@ -58,12 +91,12 @@ fn register_class() {
     }
 }
 
-/// Show the binding capture window. The result is delivered asynchronously via
-/// `WM_APP_HOTKEY_BOUND` posted to `main_hwnd`.
-pub fn show(main_hwnd: HWND) {
+/// Show the binding capture window. `current` is the currently active binding
+/// (if any) and is shown in the dialog so the user knows what they have now.
+pub fn show(main_hwnd: HWND, current: Option<(HOT_KEY_MODIFIERS, u32)>) {
     register_class();
     let class = wstr(BIND_CLASS);
-    let title = wstr("lens — Bind hotkey");
+    let title = wstr("lens \u{2014} Bind hotkey");
     unsafe {
         let hinstance = GetModuleHandleW(None).unwrap_or_default();
         let sw = GetSystemMetrics(SM_CXSCREEN);
@@ -89,8 +122,8 @@ pub fn show(main_hwnd: HWND) {
             _ => return,
         };
 
-        // Store the main HWND so the WndProc can post to it.
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, main_hwnd.0 as isize);
+        let state = Box::new(BindState { main: main_hwnd, current });
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
 }
@@ -106,28 +139,27 @@ unsafe extern "system" fn bind_wnd_proc(
             WM_KEYDOWN | WM_SYSKEYDOWN => {
                 let vk = (wparam.0 & 0xFFFF) as u16;
 
-                // Escape → cancel.
                 if vk == 0x1B {
-                    let main = main_from(hwnd);
-                    let _ = PostMessageW(Some(main), WM_APP_HOTKEY_BOUND, WPARAM(0), LPARAM(0));
+                    // Escape → cancel.
+                    let st = state_ref(hwnd);
+                    let _ =
+                        PostMessageW(Some(st.main), WM_APP_HOTKEY_BOUND, WPARAM(0), LPARAM(0));
                     let _ = DestroyWindow(hwnd);
                     return LRESULT(0);
                 }
 
-                // Ignore bare modifier keypresses — wait for a "real" key.
                 if is_modifier(vk) {
                     return LRESULT(0);
                 }
 
                 let mods = current_modifiers();
                 if mods.0 == 0 {
-                    // No modifier held — not a valid global hotkey; ignore.
                     return LRESULT(0);
                 }
 
-                let main = main_from(hwnd);
+                let st = state_ref(hwnd);
                 let _ = PostMessageW(
-                    Some(main),
+                    Some(st.main),
                     WM_APP_HOTKEY_BOUND,
                     WPARAM(1),
                     pack(mods, vk as u32),
@@ -142,47 +174,91 @@ unsafe extern "system" fn bind_wnd_proc(
                 let mut rc = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rc);
 
-                let bg = CreateSolidBrush(COLORREF(0x00F5F5F5));
-                FillRect(hdc, &rc, bg);
+                // Background.
+                let bg = CreateSolidBrush(COLORREF(0x00F8F8F8));
+                let _ = FillRect(hdc, &rc, bg);
                 let _ = DeleteObject(bg.into());
 
                 SetBkMode(hdc, TRANSPARENT);
+
+                let pad = 18i32;
+                let line_h = 22i32;
+                let mut y = pad;
+
+                // ── Instruction lines ──────────────────────────────
                 SetTextColor(hdc, COLORREF(0x00_20_20_20));
 
-                let mut text: Vec<u16> = concat!(
-                    "Press a key combination to use as the \"New lens\" shortcut.\r\n",
-                    "(Hold Ctrl, Alt, or Shift — then press another key)\r\n\r\n",
-                    "Esc to cancel."
-                )
-                .encode_utf16()
-                .collect();
+                draw_line(hdc, &rc, pad, y,
+                    "Press a key combination to set the \u{201c}New lens\u{201d} shortcut:");
+                y += line_h;
 
-                let mut inner = RECT {
-                    left: rc.left + 16,
-                    top: rc.top + 14,
-                    right: rc.right - 16,
-                    bottom: rc.bottom - 14,
+                SetTextColor(hdc, COLORREF(0x00_60_60_60));
+                draw_line(hdc, &rc, pad + 8, y,
+                    "Hold Ctrl, Alt or Shift, then press another key.");
+                y += line_h + 10;
+
+                // ── Separator line ─────────────────────────────────
+                let sep = CreateSolidBrush(COLORREF(0x00_D0_D0_D0));
+                let sep_r = RECT { left: pad, top: y, right: rc.right - pad, bottom: y + 1 };
+                let _ = FillRect(hdc, &sep_r, sep);
+                let _ = DeleteObject(sep.into());
+                y += 12;
+
+                // ── Current binding ────────────────────────────────
+                SetTextColor(hdc, COLORREF(0x00_20_20_20));
+                draw_line(hdc, &rc, pad, y, "Current shortcut:");
+                y += line_h;
+
+                let st = state_ref(hwnd);
+                let binding_str = match st.current {
+                    Some((mods, vkey)) => format_binding(mods, vkey),
+                    None => "(none — not set)".to_string(),
                 };
-                let _ = DrawTextW(hdc, &mut text, &mut inner, DT_CENTER | DT_WORDBREAK);
+                SetTextColor(hdc, COLORREF(0x00_00_80_00)); // dark green for emphasis
+                draw_line(hdc, &rc, pad + 8, y, &binding_str);
+                y += line_h + 10;
+
+                // ── Cancel hint ────────────────────────────────────
+                SetTextColor(hdc, COLORREF(0x00_80_80_80));
+                draw_line(hdc, &rc, pad, y, "Esc to cancel without changes.");
 
                 let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
-            WM_DESTROY => LRESULT(0),
+            WM_DESTROY => {
+                // Free the BindState box.
+                let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+                if raw != 0 {
+                    drop(Box::from_raw(raw as *mut BindState));
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                }
+                LRESULT(0)
+            }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
 }
 
+/// Draw a single left-aligned text line at (pad_left, y) inside `window_rc`.
+unsafe fn draw_line(hdc: windows::Win32::Graphics::Gdi::HDC, window_rc: &RECT, pad_left: i32, y: i32, text: &str) {
+    unsafe {
+        let mut v: Vec<u16> = text.encode_utf16().collect();
+        let mut r = RECT {
+            left: window_rc.left + pad_left,
+            top: window_rc.top + y,
+            right: window_rc.right - pad_left,
+            bottom: window_rc.top + y + 24,
+        };
+        let _ = DrawTextW(hdc, &mut v, &mut r, DT_WORDBREAK);
+    }
+}
+
 #[inline]
-unsafe fn main_from(hwnd: HWND) -> HWND {
-    unsafe { HWND(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut _) }
+unsafe fn state_ref(hwnd: HWND) -> &'static BindState {
+    unsafe { &*(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const BindState) }
 }
 
 fn is_modifier(vk: u16) -> bool {
-    // VK_SHIFT=0x10, VK_CONTROL=0x11, VK_MENU(Alt)=0x12,
-    // VK_LSHIFT=0xA0, VK_RSHIFT=0xA1, VK_LCONTROL=0xA2, VK_RCONTROL=0xA3,
-    // VK_LMENU=0xA4, VK_RMENU=0xA5, VK_LWIN=0x5B, VK_RWIN=0x5C
     matches!(
         vk,
         0x10 | 0x11 | 0x12 | 0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5 | 0x5B | 0x5C
