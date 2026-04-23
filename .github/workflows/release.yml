@@ -1,0 +1,89 @@
+name: Release
+
+# Trigger on version tags (e.g. v0.1.0, v1.2.3-beta).
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+env:
+  # Keep in sync with Cargo.toml [[bin]] name.
+  BIN: loupe
+  # LLVM-MinGW release that matches the locally installed version.
+  LLVM_MINGW_TAG: "20260421"
+  LLVM_MINGW_URL: "https://github.com/mstorsjo/llvm-mingw/releases/download/20260421/llvm-mingw-20260421-ucrt-x86_64.zip"
+
+jobs:
+  build-and-release:
+    name: Build & publish release
+    runs-on: windows-latest
+
+    permissions:
+      contents: write   # required to create a GitHub Release
+
+    steps:
+      # ── Source ──────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── LLVM-MinGW (provides x86_64-w64-mingw32-clang, dlltool, etc.) ──────
+      - name: Install LLVM-MinGW
+        shell: pwsh
+        run: |
+          $zip  = "$env:RUNNER_TEMP\llvm-mingw.zip"
+          $dest = "$env:RUNNER_TEMP\llvm-mingw"
+          Invoke-WebRequest -Uri "$env:LLVM_MINGW_URL" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          # The archive contains a single top-level directory; add its bin/ to PATH.
+          $bin = (Get-ChildItem $dest -Directory | Select-Object -First 1).FullName + "\bin"
+          Write-Host "Adding to PATH: $bin"
+          echo $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # ── Rust toolchain ───────────────────────────────────────────────────────
+      - name: Install Rust (gnullvm)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-gnullvm
+          components: rustfmt, clippy
+
+      # ── Cache compiled deps ───────────────────────────────────────────────────
+      - name: Cache cargo registry & build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-gnullvm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gnullvm-
+
+      # ── Quality gates ─────────────────────────────────────────────────────────
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy -- -D warnings
+
+      # ── Release build ─────────────────────────────────────────────────────────
+      - name: cargo build --release
+        run: cargo build --release
+
+      # ── Rename artifact with version suffix ───────────────────────────────────
+      - name: Prepare artifact
+        shell: pwsh
+        run: |
+          $tag     = "${{ github.ref_name }}"          # e.g. v0.1.0
+          $outName = "$env:BIN-$tag-x86_64-windows.exe"
+          Copy-Item "target\release\$env:BIN.exe" $outName
+          echo "ARTIFACT=$outName" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      # ── Create GitHub Release & upload binary ─────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Pull release notes from the matching section in CHANGELOG.md.
+          body_path: CHANGELOG.md
+          files: ${{ env.ARTIFACT }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
