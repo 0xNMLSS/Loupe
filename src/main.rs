@@ -7,6 +7,7 @@
 // that mirrors the selected source rect at 60 Hz.
 
 #![cfg(windows)]
+#![windows_subsystem = "windows"]
 
 mod dpi;
 mod hotkey;
