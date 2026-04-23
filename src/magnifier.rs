@@ -1,6 +1,7 @@
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::Magnification::{
-    MagInitialize, MagSetWindowSource, MagUninitialize, WC_MAGNIFIERW,
+    MAGTRANSFORM, MagInitialize, MagSetWindowSource, MagSetWindowTransform, MagUninitialize,
+    WC_MAGNIFIERW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, MoveWindow, WINDOW_EX_STYLE, WS_CHILD, WS_VISIBLE,
@@ -63,6 +64,30 @@ pub fn resize_to(child: HWND, client: RECT) {
 /// Point the magnifier at a screen rectangle (virtual-screen coordinates).
 pub fn set_source(child: HWND, src: RECT) {
     unsafe {
+        let _ = MagSetWindowSource(child, src);
+    }
+}
+
+/// Compute and apply a uniform-scale transform so `src` exactly fills a
+/// `child_w x child_h` magnifier child, then set the source rect. The aspect
+/// ratio of the source is preserved; if it differs from the child's, the
+/// shorter axis dictates the scale (no stretching, no clipping).
+pub fn fit_source(child: HWND, child_w: i32, child_h: i32, src: RECT) {
+    let src_w = (src.right - src.left).max(1) as f32;
+    let src_h = (src.bottom - src.top).max(1) as f32;
+    let scale_x = child_w as f32 / src_w;
+    let scale_y = child_h as f32 / src_h;
+    let scale = scale_x.min(scale_y).max(0.01);
+
+    // MAGTRANSFORM.v is a row-major 3x3 matrix flattened as [f32; 9].
+    // Index = row * 3 + col. We set m11 (scale x), m22 (scale y), and m33 (1).
+    let mut transform = MAGTRANSFORM::default();
+    transform.v[0] = scale;
+    transform.v[4] = scale;
+    transform.v[8] = 1.0;
+
+    unsafe {
+        let _ = MagSetWindowTransform(child, &mut transform);
         let _ = MagSetWindowSource(child, src);
     }
 }

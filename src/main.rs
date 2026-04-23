@@ -21,10 +21,10 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW,
-    HMENU, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, MSG, PostQuitMessage, RegisterClassW,
-    SW_SHOW, SetLayeredWindowAttributes, SetTimer, ShowWindow, TranslateMessage, WM_COMMAND,
-    WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SIZE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
+    HICON, HMENU, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MSG, PostQuitMessage,
+    RegisterClassW, SW_SHOW, SetLayeredWindowAttributes, SetTimer, ShowWindow, TranslateMessage,
+    WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SIZE, WM_TIMER, WNDCLASSW,
+    WS_EX_LAYERED, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PCWSTR;
 
@@ -35,6 +35,29 @@ use crate::tray::{IDM_NEW_LENS, IDM_QUIT, WM_APP_TRAY};
 /// passing as `PCWSTR` to Win32 functions.
 pub fn wstr(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Resource id of the embedded application icon (see `app.rc`). Used with
+/// `LoadIconW` + the `MAKEINTRESOURCE`-style integer-ptr convention.
+pub const IDI_APP_ICON: u16 = 1;
+
+/// Load the embedded application icon, falling back to a default system icon
+/// if the resource is missing for some reason. Returns `HICON::default()`
+/// only when even the fallback fails.
+pub fn load_app_icon() -> HICON {
+    unsafe {
+        let hinstance = GetModuleHandleW(None).ok();
+        if let Some(h) = hinstance
+            && let Ok(icon) = LoadIconW(Some(h.into()), PCWSTR(IDI_APP_ICON as usize as *const u16))
+        {
+            return icon;
+        }
+        LoadIconW(
+            None,
+            windows::Win32::UI::WindowsAndMessaging::IDI_APPLICATION,
+        )
+        .unwrap_or_default()
+    }
 }
 
 /// Per-process state. The main window's `WndProc` reaches into this via the
@@ -108,11 +131,13 @@ fn create_main_window() -> Option<HWND> {
     let title = wstr("lens");
     unsafe {
         let hinstance = GetModuleHandleW(None).ok()?;
+        let icon = load_app_icon();
         let wc = WNDCLASSW {
             lpfnWndProc: Some(main_wnd_proc),
             hInstance: hinstance.into(),
             lpszClassName: PCWSTR(class.as_ptr()),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            hIcon: icon,
             ..Default::default()
         };
         let _ = RegisterClassW(&wc);
@@ -234,11 +259,16 @@ unsafe extern "system" fn main_wnd_proc(
             WM_SIZE => {
                 let mut client = RECT::default();
                 let _ = GetClientRect(hwnd, &mut client);
+                let cw = client.right - client.left;
+                let ch = client.bottom - client.top;
                 STATE.with(|s| {
                     if let Some(st) = s.borrow().as_ref()
                         && let Some(c) = st.mag_child
                     {
                         magnifier::resize_to(c, client);
+                        if let Some(src) = st.current_source {
+                            magnifier::fit_source(c, cw, ch, src);
+                        }
                     }
                 });
                 LRESULT(0)
@@ -265,11 +295,18 @@ unsafe extern "system" fn main_wnd_proc(
 }
 
 fn apply_source(hwnd: HWND, src: RECT) {
+    let mut client = RECT::default();
+    unsafe {
+        let _ = GetClientRect(hwnd, &mut client);
+    }
+    let cw = client.right - client.left;
+    let ch = client.bottom - client.top;
+
     STATE.with(|s| {
         if let Some(st) = s.borrow_mut().as_mut() {
             st.current_source = Some(src);
             if let Some(c) = st.mag_child {
-                magnifier::set_source(c, src);
+                magnifier::fit_source(c, cw, ch, src);
             }
         }
     });

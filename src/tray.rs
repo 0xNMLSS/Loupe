@@ -3,10 +3,12 @@ use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, IDI_APPLICATION, LoadIconW,
-    MF_SEPARATOR, MF_STRING, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, MF_SEPARATOR, MF_STRING,
+    SetForegroundWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
 };
 use windows::core::PCWSTR;
+
+use crate::load_app_icon;
 
 /// Application-defined message Windows posts back to us for tray events.
 pub const WM_APP_TRAY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
@@ -28,11 +30,7 @@ fn build_nid(hwnd: HWND) -> NOTIFYICONDATAW {
         uCallbackMessage: WM_APP_TRAY,
         ..Default::default()
     };
-    unsafe {
-        if let Ok(icon) = LoadIconW(None, IDI_APPLICATION) {
-            nid.hIcon = icon;
-        }
-    }
+    nid.hIcon = load_app_icon();
     let tip: Vec<u16> = "lens — Ctrl+Alt+Z to magnify\0".encode_utf16().collect();
     let copy_len = tip.len().min(nid.szTip.len());
     nid.szTip[..copy_len].copy_from_slice(&tip[..copy_len]);

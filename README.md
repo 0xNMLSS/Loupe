@@ -41,14 +41,30 @@ Press `Esc` during region selection to cancel.
 
 ```
 src/
-  main.rs        entry point and message loop
-  app.rs         shared application state
+  main.rs        entry point, message loop, host window
   hotkey.rs      global hotkey registration
   tray.rs        notification-area icon and menu
   region.rs      transparent overlay for region selection
-  magnifier.rs   host window + WC_MAGNIFIER child
+  magnifier.rs   WC_MAGNIFIER child + uniform-scale transform
   dpi.rs         per-monitor DPI v2 awareness
+assets/
+  lens.ico       application icon (generated, see make_icon.ps1)
+  make_icon.ps1  GDI+ script that (re)generates lens.ico
+app.rc           resource script: embeds lens.ico as resource id 1
+build.rs         compiles app.rc via the embed-resource crate
 ```
+
+## Regenerating the icon
+
+If you tweak the icon design, regenerate the `.ico` from PowerShell at the
+repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File assets\make_icon.ps1
+```
+
+Then run `cargo build` again — the build script picks up the new `lens.ico`
+automatically.
 
 ## Development
 

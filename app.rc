@@ -1,0 +1,3 @@
+// Resource script: embed the application icon.
+// Resource id 1 is loaded at runtime via LoadIconW(hinstance, MAKEINTRESOURCE(1)).
+1 ICON "assets/lens.ico"
