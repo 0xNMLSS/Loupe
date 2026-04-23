@@ -8,7 +8,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
-use crate::load_app_icon;
+use crate::{load_app_icon, wstr};
 
 /// Application-defined message Windows posts back to us for tray events.
 pub const WM_APP_TRAY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
@@ -20,6 +20,7 @@ const TRAY_UID: u32 = 1;
 /// Menu command ids returned by `TrackPopupMenu` via `WM_COMMAND`.
 pub const IDM_NEW_LENS: u32 = 100;
 pub const IDM_QUIT: u32 = 101;
+pub const IDM_BIND_HOTKEY: u32 = 102;
 
 fn build_nid(hwnd: HWND) -> NOTIFYICONDATAW {
     let mut nid = NOTIFYICONDATAW {
@@ -31,7 +32,7 @@ fn build_nid(hwnd: HWND) -> NOTIFYICONDATAW {
         ..Default::default()
     };
     nid.hIcon = load_app_icon();
-    let tip: Vec<u16> = "lens — Ctrl+Alt+Z to magnify\0".encode_utf16().collect();
+    let tip: Vec<u16> = "lens — right-click to configure\0".encode_utf16().collect();
     let copy_len = tip.len().min(nid.szTip.len());
     nid.szTip[..copy_len].copy_from_slice(&tip[..copy_len]);
     nid
@@ -59,13 +60,20 @@ pub fn show_menu(hwnd: HWND) {
             Ok(m) => m,
             Err(_) => return,
         };
-        let new_lens: Vec<u16> = "New lens\t(Ctrl+Alt+Z)\0".encode_utf16().collect();
-        let quit: Vec<u16> = "Quit\0".encode_utf16().collect();
+        let new_lens = wstr("New lens");
+        let bind = wstr("Bind hotkey\u{2026}");
+        let quit = wstr("Quit");
         let _ = AppendMenuW(
             menu,
             MF_STRING,
             IDM_NEW_LENS as usize,
             PCWSTR(new_lens.as_ptr()),
+        );
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            IDM_BIND_HOTKEY as usize,
+            PCWSTR(bind.as_ptr()),
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, IDM_QUIT as usize, PCWSTR(quit.as_ptr()));

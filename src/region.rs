@@ -2,18 +2,17 @@ use std::cell::RefCell;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HBRUSH, InvalidateRect,
-    PAINTSTRUCT,
+    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetSystemMetrics,
-    GetWindowLongPtrW, HCURSOR, HICON, HMENU, IDC_CROSS, LWA_ALPHA, LoadCursorW, PostMessageW,
+    GetWindowLongPtrW, HCURSOR, HMENU, IDC_CROSS, KillTimer, LoadCursorW, PostMessageW,
     RegisterClassW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SW_SHOW, SetLayeredWindowAttributes, SetWindowLongPtrW, ShowWindow, WM_APP, WM_DESTROY,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SW_SHOW, SetTimer, SetWindowLongPtrW, ShowWindow, WM_APP, WM_DESTROY, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -24,13 +23,40 @@ use crate::wstr;
 /// the `LPARAM`-pointed `RECT`; `wparam.0 == 0` means cancelled.
 pub const WM_APP_REGION_DONE: u32 = WM_APP + 2;
 
-/// Selection-rectangle border thickness, in device pixels.
+/// Selection-rectangle border thickness in device pixels.
 const BORDER_THICKNESS: i32 = 4;
 
-/// Selection-rectangle border colour. `COLORREF` packs bytes as `0x00BBGGRR`,
-/// so `0x0000_E5FF` is RGB(255, 229, 0) — a saturated amber that stays
-/// readable against both bright and dark desktop backgrounds.
-const BORDER_COLOR: COLORREF = COLORREF(0x0000_E5FF);
+/// Timer id for the rainbow hue animation inside the overlay window.
+const RAINBOW_TIMER_ID: usize = 1;
+
+/// Hue degrees advanced per timer tick (~40 ms) — one full cycle ≈ 9 s.
+const RAINBOW_STEP: u16 = 4;
+
+/// Background fill for the opaque overlay (very dark charcoal).
+const OVERLAY_BG: COLORREF = COLORREF(0x00_28_28_28);
+
+/// Fill for the selected region interior (slightly lighter than the bg so the
+/// selection area is visually distinct even without desktop show-through).
+const OVERLAY_SEL: COLORREF = COLORREF(0x00_58_58_58);
+
+/// Convert an HSV hue (0–359°, S=1, V=1) to a Win32 `COLORREF` (0x00BBGGRR).
+fn hue_to_colorref(hue: u16) -> COLORREF {
+    let h = (hue % 360) as f32;
+    let c = 1.0f32;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let (r, g, b): (f32, f32, f32) = match (h / 60.0) as u8 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let r = (r * 255.0) as u32;
+    let g = (g * 255.0) as u32;
+    let b = (b * 255.0) as u32;
+    COLORREF(r | (g << 8) | (b << 16))
+}
 
 /// Per-overlay state kept alive via `GWLP_USERDATA`.
 struct Overlay {
@@ -39,6 +65,7 @@ struct Overlay {
     start: POINT,
     current: POINT,
     rect: RECT,
+    hue: u16,
 }
 
 thread_local! {
@@ -64,7 +91,7 @@ fn register_class() {
     }
 }
 
-/// Show the fullscreen transparent overlay and let the user drag a region.
+/// Show the fullscreen opaque overlay and let the user drag a region.
 /// `main_hwnd` will receive `WM_APP_REGION_DONE` when the user releases the
 /// mouse (`wparam == 1`) or hits Escape (`wparam == 0`).
 pub fn show(main_hwnd: HWND) {
@@ -78,8 +105,9 @@ pub fn show(main_hwnd: HWND) {
         let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
         let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
+        // No WS_EX_LAYERED — overlay is fully opaque, painted solid.
         let hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             PCWSTR(class_w.as_ptr()),
             PCWSTR(title_w.as_ptr()),
             WS_POPUP,
@@ -103,13 +131,14 @@ pub fn show(main_hwnd: HWND) {
             start: POINT::default(),
             current: POINT::default(),
             rect: RECT::default(),
+            hue: 0,
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
-        // ~25% alpha — visible enough to dim the desktop without hiding it.
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 64, LWA_ALPHA);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetCapture(hwnd);
+        // Start the rainbow animation timer (~25 fps).
+        SetTimer(Some(hwnd), RAINBOW_TIMER_ID, 40, None);
     }
 }
 
@@ -184,14 +213,22 @@ unsafe extern "system" fn wnd_proc(
                 let _ = PostMessageW(Some(main), WM_APP_REGION_DONE, WPARAM(0), LPARAM(0));
                 LRESULT(0)
             }
+            WM_TIMER if wparam.0 == RAINBOW_TIMER_ID => {
+                st.hue = (st.hue + RAINBOW_STEP) % 360;
+                // Only invalidate the border strip area to avoid a full redraw
+                // every tick — redraw the entire window since the region rect
+                // changes anyway while dragging.
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                LRESULT(0)
+            }
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
-                // Dim background.
-                let dim = CreateSolidBrush(COLORREF(0x0000_0000));
-                let full = ps.rcPaint;
-                FillRect(hdc, &full, dim);
-                let _ = DeleteObject(dim.into());
+
+                // Opaque dark background — no alpha transparency.
+                let bg = CreateSolidBrush(OVERLAY_BG);
+                FillRect(hdc, &ps.rcPaint, bg);
+                let _ = DeleteObject(bg.into());
 
                 if st.dragging || (st.rect.right > st.rect.left) {
                     let lx = st.start.x.min(st.current.x);
@@ -205,49 +242,22 @@ unsafe extern "system" fn wnd_proc(
                         bottom: ry,
                     };
 
-                    // Cut the selected region back to a clear rectangle by
-                    // overpainting it with a fully-transparent black brush.
-                    let clear = CreateSolidBrush(COLORREF(0x0010_1010));
-                    FillRect(hdc, &sel, clear);
-                    let _ = DeleteObject(clear.into());
+                    // Fill the selection interior with a lighter shade so it
+                    // reads as "the chosen area" against the dark overlay.
+                    let sel_fill = CreateSolidBrush(OVERLAY_SEL);
+                    FillRect(hdc, &sel, sel_fill);
+                    let _ = DeleteObject(sel_fill.into());
 
-                    // Draw a thick coloured border. `FrameRect` always paints
-                    // a 1-pixel edge regardless of the selected pen, so we
-                    // composit the border out of four solid bands instead —
-                    // gives us a predictable thickness and lets us crank it
-                    // up without GDI surprises.
-                    let border = BORDER_THICKNESS;
-                    let color = BORDER_COLOR;
+                    // Four `FillRect` bands give a stable pixel-exact border
+                    // at any DPI — border colour cycles through the rainbow.
+                    let b = BORDER_THICKNESS;
+                    let color = hue_to_colorref(st.hue);
                     let brush = CreateSolidBrush(color);
 
-                    let top = RECT {
-                        left: lx,
-                        top: ly,
-                        right: rx,
-                        bottom: (ly + border).min(ry),
-                    };
-                    let bottom = RECT {
-                        left: lx,
-                        top: (ry - border).max(ly),
-                        right: rx,
-                        bottom: ry,
-                    };
-                    let left = RECT {
-                        left: lx,
-                        top: ly,
-                        right: (lx + border).min(rx),
-                        bottom: ry,
-                    };
-                    let right = RECT {
-                        left: (rx - border).max(lx),
-                        top: ly,
-                        right: rx,
-                        bottom: ry,
-                    };
-                    FillRect(hdc, &top, brush);
-                    FillRect(hdc, &bottom, brush);
-                    FillRect(hdc, &left, brush);
-                    FillRect(hdc, &right, brush);
+                    FillRect(hdc, &RECT { left: lx, top: ly, right: rx, bottom: (ly + b).min(ry) }, brush);
+                    FillRect(hdc, &RECT { left: lx, top: (ry - b).max(ly), right: rx, bottom: ry }, brush);
+                    FillRect(hdc, &RECT { left: lx, top: ly, right: (lx + b).min(rx), bottom: ry }, brush);
+                    FillRect(hdc, &RECT { left: (rx - b).max(lx), top: ly, right: rx, bottom: ry }, brush);
                     let _ = DeleteObject(brush.into());
                 }
 
@@ -255,6 +265,7 @@ unsafe extern "system" fn wnd_proc(
                 LRESULT(0)
             }
             WM_DESTROY => {
+                let _ = KillTimer(Some(hwnd), RAINBOW_TIMER_ID);
                 let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
                 if raw != 0 {
                     drop(Box::from_raw(raw as *mut Overlay));
@@ -273,14 +284,4 @@ fn lo_hi(lp: LPARAM) -> (i32, i32) {
     let lo = (v & 0xFFFF) as i16 as i32;
     let hi = ((v >> 16) & 0xFFFF) as i16 as i32;
     (lo, hi)
-}
-
-// HBRUSH import retained for type annotations on returns above.
-#[allow(dead_code)]
-fn _unused() -> Option<HBRUSH> {
-    None
-}
-#[allow(dead_code)]
-fn _unused2() -> Option<HICON> {
-    None
 }

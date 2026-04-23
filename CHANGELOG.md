@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Region-selection overlay is now fully opaque (removed `WS_EX_LAYERED` /
+  `LWA_ALPHA`). The background is a solid dark charcoal (`#282828`); the
+  selected rectangle interior renders in a lighter gray (`#585858`) so the
+  chosen area is visually distinct without requiring see-through blending.
+- Selection border is now animated rainbow: an HSV hue cycles 0→359° at
+  ~25 fps (40 ms `WM_TIMER`), converted to a full-saturation/value `COLORREF`
+  and drawn via four `FillRect` bands at 4-pixel thickness.
+- Hotkey binding is now user-driven rather than hardcoded.  
+  At startup no global hotkey is registered.  
+  Right-clicking the tray icon now shows three items:
+  - **New lens** — start a selection immediately
+  - **Bind hotkey…** — opens a small always-on-top capture window; press any
+    modifier (`Ctrl`/`Alt`/`Shift`) + non-modifier key to set the shortcut;
+    `Esc` cancels. The chosen combo is registered via `RegisterHotKey` with
+    `MOD_NOREPEAT`.
+  - **Quit**
+
+### Previously Changed
+
 - Region-selection overlay now draws a 4-pixel saturated-amber border
   (RGB 255, 229, 0) instead of the previous 1-pixel white `FrameRect`. The
   border is composited from four `FillRect` bands so the thickness is

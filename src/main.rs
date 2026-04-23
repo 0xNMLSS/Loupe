@@ -1,15 +1,16 @@
 // lens — a tiny live screen-region magnifier for Windows.
 //
-// Architecture: a single hidden-on-startup main window owns the global hotkey
-// and tray icon. Triggering "New lens" briefly shows a transparent fullscreen
-// overlay, lets the user drag a rectangle, then opens (or reuses) a floating
-// always-on-top host window containing a `WC_MAGNIFIER` child that mirrors
-// the selected source rect at 60 Hz.
+// Architecture: a single hidden-on-startup main window owns an optional global
+// hotkey and the tray icon. Triggering "New lens" (via tray menu or hotkey)
+// shows a fullscreen overlay, lets the user drag a rectangle, then opens (or
+// reuses) a floating always-on-top host window with a `WC_MAGNIFIER` child
+// that mirrors the selected source rect at 60 Hz.
 
 #![cfg(windows)]
 
 mod dpi;
 mod hotkey;
+mod hotkey_bind;
 mod magnifier;
 mod region;
 mod tray;
@@ -20,16 +21,17 @@ use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW,
-    HICON, HMENU, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MSG, PostQuitMessage,
-    RegisterClassW, SW_SHOW, SetLayeredWindowAttributes, SetTimer, ShowWindow, TranslateMessage,
-    WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SIZE, WM_TIMER, WNDCLASSW,
-    WS_EX_LAYERED, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
+    CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
+    GetMessageW, HICON, HMENU, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW, LoadIconW, MSG,
+    PostQuitMessage, RegisterClassW, SW_SHOW, SetLayeredWindowAttributes, SetTimer, ShowWindow,
+    TranslateMessage, WM_COMMAND, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WM_SIZE,
+    WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW,
 };
 use windows::core::PCWSTR;
 
+use crate::hotkey_bind::WM_APP_HOTKEY_BOUND;
 use crate::region::WM_APP_REGION_DONE;
-use crate::tray::{IDM_NEW_LENS, IDM_QUIT, WM_APP_TRAY};
+use crate::tray::{IDM_BIND_HOTKEY, IDM_NEW_LENS, IDM_QUIT, WM_APP_TRAY};
 
 /// Convert a Rust `&str` into a NUL-terminated UTF-16 buffer suitable for
 /// passing as `PCWSTR` to Win32 functions.
@@ -42,8 +44,7 @@ pub fn wstr(s: &str) -> Vec<u16> {
 pub const IDI_APP_ICON: u16 = 1;
 
 /// Load the embedded application icon, falling back to a default system icon
-/// if the resource is missing for some reason. Returns `HICON::default()`
-/// only when even the fallback fails.
+/// if the resource is missing for some reason.
 pub fn load_app_icon() -> HICON {
     unsafe {
         let hinstance = GetModuleHandleW(None).ok();
@@ -68,6 +69,8 @@ struct AppState {
     mag_child: Option<HWND>,
     timer_id: Option<usize>,
     current_source: Option<RECT>,
+    /// Whether a global hotkey is currently registered.
+    hotkey_registered: bool,
 }
 
 thread_local! {
@@ -101,12 +104,11 @@ fn main() {
             mag_child: None,
             timer_id: None,
             current_source: None,
+            hotkey_registered: false,
         });
     });
 
-    if !hotkey::register(main) {
-        eprintln!("lens: failed to register hotkey Ctrl+Alt+Z (already in use?)");
-    }
+    // No default hotkey — user binds one via tray menu ▸ "Bind hotkey…".
     if !tray::add(main) {
         eprintln!("lens: failed to add tray icon");
     }
@@ -115,12 +117,15 @@ fn main() {
 
     // Teardown — best-effort, in reverse order of creation.
     tray::remove(main);
-    hotkey::unregister(main);
-    if let Some(state) = STATE.with(|s| s.borrow_mut().take())
-        && let Some(id) = state.timer_id
-    {
-        unsafe {
-            let _ = KillTimer(Some(state.main), id);
+    let state = STATE.with(|s| s.borrow_mut().take());
+    if let Some(st) = state {
+        if st.hotkey_registered {
+            hotkey::unregister(st.main);
+        }
+        if let Some(id) = st.timer_id {
+            unsafe {
+                let _ = KillTimer(Some(st.main), id);
+            }
         }
     }
     magnifier::shutdown();
@@ -162,8 +167,8 @@ fn create_main_window() -> Option<HWND> {
             return None;
         }
 
-        // Fully opaque — the alpha channel only needs to exist for the
-        // magnifier child to draw correctly.
+        // Fully opaque — the layered attribute only needs to exist for
+        // the magnifier child to render correctly.
         let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
 
         let mut client = RECT::default();
@@ -171,15 +176,6 @@ fn create_main_window() -> Option<HWND> {
         let child = magnifier::create_child(hwnd, client)?;
 
         let timer = SetTimer(Some(hwnd), REFRESH_TIMER_ID, REFRESH_TIMER_MS, None);
-        STATE.with(|s| {
-            // STATE is filled in by `main` *after* this returns, so we stash
-            // these pieces below using a separate setter.
-            let _ = s;
-        });
-        // We delay attaching the child/timer to STATE because `main` creates
-        // the AppState struct after we return. Stash through a temp closure
-        // by going via raw pointers would be overkill; instead, we use a
-        // second pass via `set_post_create`.
         set_post_create(child, timer);
 
         Some(hwnd)
@@ -197,7 +193,6 @@ thread_local! {
 }
 
 fn run_message_loop() {
-    // Promote post_create info into AppState now that it exists.
     if let Some((child, timer)) = POST_CREATE.with(|c| c.borrow_mut().take()) {
         STATE.with(|s| {
             if let Some(st) = s.borrow_mut().as_mut() {
@@ -241,10 +236,28 @@ unsafe extern "system" fn main_wnd_proc(
                 let id = (wparam.0 as u32) & 0xFFFF;
                 match id {
                     IDM_NEW_LENS => region::show(hwnd),
+                    IDM_BIND_HOTKEY => hotkey_bind::show(hwnd),
                     IDM_QUIT => {
-                        let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd);
+                        let _ = DestroyWindow(hwnd);
                     }
                     _ => {}
+                }
+                LRESULT(0)
+            }
+            x if x == WM_APP_HOTKEY_BOUND => {
+                if wparam.0 == 1 {
+                    let (mods, vkey) = hotkey_bind::unpack(lparam);
+                    STATE.with(|s| {
+                        if let Some(st) = s.borrow_mut().as_mut() {
+                            if st.hotkey_registered {
+                                hotkey::unregister(st.main);
+                            }
+                            st.hotkey_registered = hotkey::register(st.main, mods, vkey);
+                            if !st.hotkey_registered {
+                                eprintln!("lens: hotkey already in use by another app");
+                            }
+                        }
+                    });
                 }
                 LRESULT(0)
             }
