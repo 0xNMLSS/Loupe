@@ -4,12 +4,14 @@
 //   %APPDATA%\loupe\config.toml
 // so users can inspect or reset it with any text editor.
 //
-// Current keys:
-//   hotkey_mods = <u32>   HOT_KEY_MODIFIERS raw value
-//   hotkey_vkey = <u32>   virtual-key code
+// Keys:
+//   hotkey_mods, hotkey_vkey
+//   renderer = classic | gpu
 
 use std::fs;
 use std::path::PathBuf;
+
+use crate::magnifier::RendererKind;
 
 /// The directory and file where configuration is stored.
 fn config_path() -> Option<PathBuf> {
@@ -24,14 +26,34 @@ pub struct HotkeyConfig {
     pub vkey: u32,
 }
 
+pub struct AppConfig {
+    pub hotkey: Option<HotkeyConfig>,
+    pub renderer: RendererKind,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            hotkey: None,
+            renderer: RendererKind::Classic,
+        }
+    }
+}
+
 // ── Load ─────────────────────────────────────────────────────────────────────
 
-/// Read the config file and return the saved hotkey, if any.
-/// Returns `None` on missing file, parse error, or incomplete data.
-pub fn load_hotkey() -> Option<HotkeyConfig> {
-    let text = fs::read_to_string(config_path()?).ok()?;
+/// Full config. Missing keys use defaults. Missing file yields `default()`.
+pub fn load_config() -> AppConfig {
+    let Some(path) = config_path() else {
+        return AppConfig::default();
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return AppConfig::default();
+    };
+
     let mut mods: Option<u32> = None;
     let mut vkey: Option<u32> = None;
+    let mut renderer: Option<RendererKind> = None;
 
     for raw in text.lines() {
         let line = raw.trim();
@@ -42,31 +64,58 @@ pub fn load_hotkey() -> Option<HotkeyConfig> {
             mods = v.trim_start_matches([' ', '=']).trim().parse().ok();
         } else if let Some(v) = line.strip_prefix("hotkey_vkey") {
             vkey = v.trim_start_matches([' ', '=']).trim().parse().ok();
+        } else if let Some(v) = line.strip_prefix("renderer") {
+            let s = v.trim_start_matches([' ', '=']).trim();
+            if let Some(k) = RendererKind::from_str(s) {
+                renderer = Some(k);
+            }
         }
     }
 
-    Some(HotkeyConfig {
-        mods: mods?,
-        vkey: vkey?,
-    })
+    let hotkey = match (mods, vkey) {
+        (Some(m), Some(v)) => Some(HotkeyConfig { mods: m, vkey: v }),
+        _ => None,
+    };
+
+    AppConfig {
+        hotkey,
+        renderer: renderer.unwrap_or(RendererKind::Classic),
+    }
 }
 
 // ── Save ─────────────────────────────────────────────────────────────────────
 
-/// Persist a hotkey binding. Silently ignores write errors (best-effort).
-pub fn save_hotkey(mods: u32, vkey: u32) {
+fn write_file(cfg: &AppConfig) {
     let Some(path) = config_path() else { return };
-
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
-
+    let hk = if let Some(h) = &cfg.hotkey {
+        format!("hotkey_mods = {}\nhotkey_vkey = {}\n", h.mods, h.vkey)
+    } else {
+        String::new()
+    };
     let contents = format!(
         "# Loupe configuration — edit with any text editor.\n\
          # Delete this file to reset all settings.\n\
          \n\
-         hotkey_mods = {mods}\n\
-         hotkey_vkey = {vkey}\n"
+         {hk}\
+         renderer = {}\n",
+        cfg.renderer.as_str()
     );
     let _ = fs::write(&path, contents);
+}
+
+/// Persist a hotkey binding, preserving the renderer line.
+pub fn save_hotkey(mods: u32, vkey: u32) {
+    let mut c = load_config();
+    c.hotkey = Some(HotkeyConfig { mods, vkey });
+    write_file(&c);
+}
+
+/// Store renderer mode (GPU vs classic).
+pub fn save_renderer(kind: RendererKind) {
+    let mut c = load_config();
+    c.renderer = kind;
+    write_file(&c);
 }

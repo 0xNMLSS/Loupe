@@ -8,15 +8,62 @@ always-on-top window. Built in Rust on top of the Win32 Magnification API
 ## Features (v0.1)
 
 - Per-monitor DPI v2 awareness — sharp on any scaling factor.
+- **Renderer (tray → *Renderer*)**: **Classic** uses the built-in Win32
+  `WC_MAGNIFIER` control (bilinear scaling). **GPU** uses **Windows.Graphics.Capture**
+  (WGC) + **Direct3D 11** + a **Lanczos-3** pixel shader for sharper upscaling at
+  high zoom. The choice is stored in `%APPDATA%\loupe\config.toml` as `renderer =
+  classic` or `gpu`. If GPU init fails (e.g. unsupported OS), the app falls back
+  to Classic and logs a message. **Minimum for GPU:** Windows 10 version 1809
+  (17763) or later for WGC; some early Win10 builds briefly show a yellow capture
+  border (removed in newer Windows).
 - Always-on-top, resizable, draggable magnifier window. Double-click the
   magnified view to enter borderless fullscreen (no title bar, covers the
-  entire monitor); double-click again to restore. (A nearly invisible layered
-  child sits above `WC_MAGNIFIER` to receive the double-click — the magnifier
-  control itself does not get mouse hits.)
+  entire monitor); double-click again to restore. **Mouse wheel** over the
+  magnified view zooms in or out (adjusts the captured screen rectangle
+  about its center). (A nearly invisible layered child sits above the
+  magnifier for hit-testing — the classic magnifier control itself does not
+  get mouse hits.)
+
+  On the **Classic** renderer the magnification factor is clamped to **at
+  least 1.5×** — the underlying `WC_MAGNIFIER` API becomes visibly jittery
+  near 1.0× and the safe threshold drifts between systems. For sub-1.5×
+  overviews switch to the **GPU** renderer (tray → right-click → *Renderer*
+  → *GPU*); the choice is remembered in `config.toml`.
+- **Persistent on-desktop source frame**: after picking a region, a thin
+  **red outline** stays on the desktop showing exactly which screen
+  rectangle is being magnified. **It matches the rainbow selection
+  rectangle pixel-for-pixel — same position, same size — always.** This
+  is the highest-priority UX guarantee: the source rectangle is never
+  silently shrunk by any zoom cap. After each region selection the
+  loupe's client area is also **reshaped to the selection's aspect ratio
+  while preserving total area** (anchored at the current top-left,
+  clamped to the monitor work area; skipped in fullscreen), so for any
+  reasonable selection there is no letterboxing inside the magnified
+  view and the Classic 1.5× safe range is comfortably satisfied. The
+  frame is **click-through in the middle** (apps underneath stay
+  clickable) and **draggable by the border** — click the red edge and
+  drag to pan the source rectangle (mouse direction matches source
+  movement; no inversion). Wheel-zoom keeps the frame in sync; on
+  Classic, scrolling out beyond the 1.5× floor is a no-op so the source
+  and the frame never drift apart. Resizing the loupe window keeps
+  `current_source` (and therefore the red frame) unchanged, so the
+  frame still matches your selection 1:1 — if that pushes the Classic
+  scale below 1.5× and you see flicker, switch the renderer to **GPU**.
+  Toggle visibility from the tray (right-click → *Show source frame*);
+  state defaults to *visible* and is in-memory only. The frame is
+  hidden from screen capture (`SetWindowDisplayAffinity(
+  WDA_EXCLUDEFROMCAPTURE)`, Windows 10 v2004+) so it never appears
+  inside the magnified view.
 - Drag-to-select source rectangle on a transparent fullscreen overlay with a
   static rainbow border.
-- Live update of the magnified view (~60 Hz) as the source area changes.
-- User-bindable global hotkey (right-click tray → *Bind hotkey…*).
+- Live update: Classic path refreshes the source at ~60 Hz via a timer; the GPU
+  path is driven by capture frames (no periodic `WM_TIMER`). On the GPU path
+  every captured frame is also `CopyResource`d into a self-owned cache
+  texture, so pan / wheel-zoom / window-resize / fullscreen toggle can
+  immediately re-render from the cached frame instead of waiting for the
+  next WGC frame (important on a static desktop, where WGC may not push a
+  frame for seconds).
+- User-bindable global hotkey (tray → right-click → *Bind hotkey…*).
 - Clean teardown: hotkey unregistered, tray icon removed, magnifier
   uninitialized.
 
@@ -150,10 +197,10 @@ release uses):
 cargo build --release --features hide_console
 ```
 
-Right-click the tray icon → *New loupe*, drag a rectangle on screen, release
+Click the tray icon (or *New loupe* in the menu), drag a rectangle on screen, release
 the mouse, and the magnified view appears.
 
-To set a global hotkey: right-click the tray icon → *Bind hotkey…*, then hold
+To set a global hotkey: right-click the tray icon for the menu → *Bind hotkey…*, then hold
 a modifier key (`Ctrl`, `Alt`, or `Shift`) and press any other key.
 
 Press `Esc` during region selection to cancel.

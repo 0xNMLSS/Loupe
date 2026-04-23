@@ -1,3 +1,7 @@
+// Classic Win32 `WC_MAGNIFIER` + transparent hit-test overlay.
+// Extracted from the original single-file `magnifier` module for parity
+// with the optional GPU path.
+
 use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{
@@ -5,15 +9,15 @@ use windows::Win32::Foundation::{
     WPARAM,
 };
 use windows::Win32::UI::Magnification::{
-    MAGTRANSFORM, MagInitialize, MagSetWindowSource, MagSetWindowTransform, MagUninitialize,
-    WC_MAGNIFIERW,
+    MAGTRANSFORM, MW_FILTERMODE_EXCLUDE, MagInitialize, MagSetWindowFilterList, MagSetWindowSource,
+    MagSetWindowTransform, MagUninitialize, WC_MAGNIFIERW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CreateWindowExW, DefWindowProcW, GWL_EXSTYLE, GWLP_USERDATA, GetWindowLongPtrW,
     HMENU, HWND_TOP, IDC_ARROW, LWA_ALPHA, LoadCursorW, MoveWindow, PostMessageW, RegisterClassW,
     SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetLayeredWindowAttributes,
-    SetWindowLongPtrW, SetWindowPos, WINDOW_EX_STYLE, WM_ERASEBKGND, WM_LBUTTONDBLCLK, WNDCLASSW,
-    WS_CHILD, WS_EX_LAYERED, WS_VISIBLE,
+    SetWindowLongPtrW, SetWindowPos, WINDOW_EX_STYLE, WM_ERASEBKGND, WM_LBUTTONDBLCLK,
+    WM_MOUSEWHEEL, WNDCLASSW, WS_CHILD, WS_EX_LAYERED, WS_VISIBLE,
 };
 
 use windows::core::PCWSTR;
@@ -24,27 +28,21 @@ use crate::wstr;
 const MAG_CHILD_ID: isize = 0x1001;
 
 /// Invisible layered child on top of the magnifier — receives double-clicks.
-/// `WC_MAGNIFIER` does not reliably participate in hit-testing; input passes
-/// through to the desktop, so we cannot subclass it for click gestures.
 const HIT_OVERLAY_CHILD_ID: isize = 0x1002;
 
 const HIT_OVERLAY_CLASS: &str = "loupe.hit";
 
-/// Leaked wide name + one-time `RegisterClassW`. `WNDCLASSW::lpszClassName` must
-/// point to memory that stays valid for the process lifetime.
-/// Stored as `usize` because raw pointers are not `Send`/`Sync` in `static`s on
-/// this edition.
 static HIT_OVERLAY_CLASS_NAME: OnceLock<usize> = OnceLock::new();
 
 /// Posted to the host (main) window so it can toggle borderless fullscreen.
-/// Must match the handler in `main.rs`.
 pub const WM_APP_TOGGLE_FULLSCREEN: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 4;
 
-/// Nearly invisible (alpha) so the magnified bitmap remains visible while the
-/// overlay still receives mouse input.
+/// Mouse wheel zoom: `WPARAM` unused; `LPARAM` = signed wheel delta (same units as `WM_MOUSEWHEEL`,
+/// typically ±120 per notch).
+pub const WM_APP_WHEEL_ZOOM: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 6;
+
 const HIT_OVERLAY_ALPHA: u8 = 6;
 
-/// Registers `loupe.hit` once; `instance` must be the module handle used for `CreateWindowExW`.
 fn hit_overlay_class_name(instance: HINSTANCE) -> PCWSTR {
     let bits = *HIT_OVERLAY_CLASS_NAME.get_or_init(|| unsafe {
         let name: &'static mut [u16] = Box::leak(wstr(HIT_OVERLAY_CLASS).into_boxed_slice());
@@ -69,13 +67,12 @@ fn hit_overlay_class_name(instance: HINSTANCE) -> PCWSTR {
     PCWSTR(bits as *const u16)
 }
 
-/// Initialise the Magnification runtime. Must be called once before creating
-/// any magnifier window.
+/// Initialise the Win32 Magnification runtime (required before any `WC_MAGNIFIER` window).
 pub fn init() -> bool {
     unsafe { MagInitialize().as_bool() }
 }
 
-/// Tear down the Magnification runtime during shutdown.
+/// Tear down the Magnification runtime on process exit.
 pub fn shutdown() {
     unsafe {
         let _ = MagUninitialize();
@@ -112,6 +109,21 @@ pub fn create_child(host: HWND, client: RECT, instance: HINSTANCE) -> Option<HWN
     }
 }
 
+/// Exclude `host` (and any other windows) from `child`'s magnification source.
+///
+/// Without this, when the magnified source rectangle is large enough to contain
+/// the host's screen position (e.g. extreme zoom-out covering the whole desktop),
+/// `WC_MAGNIFIER` captures the loupe window itself → its own image is fed back
+/// into the next frame → visible flicker / black noise. Excluding the host makes
+/// that area come out empty in the magnified view, which is the expected
+/// behaviour (same idea as OBS "exclude window from display capture").
+pub fn exclude_from_source(child: HWND, host: HWND) {
+    let mut hosts = [host];
+    unsafe {
+        let _ = MagSetWindowFilterList(child, MW_FILTERMODE_EXCLUDE, 1, hosts.as_mut_ptr());
+    }
+}
+
 /// Layered, almost-transparent child above the magnifier; captures double-clicks.
 pub fn create_hit_overlay(host: HWND, client: RECT, instance: HINSTANCE) -> Option<HWND> {
     let width = (client.right - client.left).max(1);
@@ -121,9 +133,6 @@ pub fn create_hit_overlay(host: HWND, client: RECT, instance: HINSTANCE) -> Opti
         eprintln!("loupe: hit overlay class not registered; double-click fullscreen disabled");
         return None;
     }
-    // Do not pass WS_EX_LAYERED / WS_EX_NOACTIVATE at creation: combined extended
-    // styles on a child can make `CreateWindowExW` fail with ERROR_INVALID_HANDLE (6).
-    // Apply WS_EX_LAYERED after create, then layered attributes (standard pattern).
     let hwnd = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
@@ -175,13 +184,28 @@ unsafe extern "system" fn hit_overlay_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     unsafe {
+        let host_isize = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        let host_opt = (host_isize != 0).then_some(HWND(host_isize as *mut _));
+
         match msg {
             WM_LBUTTONDBLCLK => {
-                let host_isize = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-                if host_isize != 0 {
-                    let host = HWND(host_isize as *mut _);
+                if let Some(host) = host_opt {
                     let _ =
                         PostMessageW(Some(host), WM_APP_TOGGLE_FULLSCREEN, WPARAM(0), LPARAM(0));
+                }
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL => {
+                if let Some(host) = host_opt {
+                    let delta = ((wparam.0 as u32 >> 16) as i16) as i32;
+                    if delta != 0 {
+                        let _ = PostMessageW(
+                            Some(host),
+                            WM_APP_WHEEL_ZOOM,
+                            WPARAM(0),
+                            LPARAM(delta as isize),
+                        );
+                    }
                 }
                 LRESULT(0)
             }
@@ -215,11 +239,21 @@ pub fn elevate_above_siblings(hwnd: HWND) {
     }
 }
 
-/// Point the magnifier at a screen rectangle (virtual-screen coordinates).
+/// Low-level: only updates the source rect. Prefer [`fit_source`] (or
+/// `Renderer::set_source`, which re-fits) whenever a custom transform is in use.
 pub fn set_source(child: HWND, src: RECT) {
     unsafe {
         let _ = MagSetWindowSource(child, src);
     }
+}
+
+/// Uniform scale used by `fit_source` (`client / source`, min axis).
+fn uniform_scale_for_fit(child_w: i32, child_h: i32, src: RECT) -> f32 {
+    let src_w = (src.right - src.left).max(1) as f32;
+    let src_h = (src.bottom - src.top).max(1) as f32;
+    let cw = child_w.max(1) as f32;
+    let ch = child_h.max(1) as f32;
+    (cw / src_w).min(ch / src_h).max(0.01)
 }
 
 /// Compute and apply a uniform-scale transform so `src` exactly fills a
@@ -229,15 +263,27 @@ pub fn set_source(child: HWND, src: RECT) {
 pub fn fit_source(child: HWND, child_w: i32, child_h: i32, src: RECT) {
     let src_w = (src.right - src.left).max(1) as f32;
     let src_h = (src.bottom - src.top).max(1) as f32;
-    let scale_x = child_w as f32 / src_w;
-    let scale_y = child_h as f32 / src_h;
-    let scale = scale_x.min(scale_y).max(0.01);
+    let cw = child_w.max(1) as f32;
+    let ch = child_h.max(1) as f32;
+    let scale = uniform_scale_for_fit(child_w, child_h, src);
 
-    // MAGTRANSFORM.v is a row-major 3x3 matrix flattened as [f32; 9].
-    // Index = row * 3 + col. We set m11 (scale x), m22 (scale y), and m33 (1).
+    // Uniform scale leaves letterboxing; center in the client (same math as GPU `build_ps_cbuf`).
+    let scaled_w = src_w * scale;
+    let scaled_h = src_h * scale;
+    let ox = (cw - scaled_w) * 0.5;
+    let oy = (ch - scaled_h) * 0.5;
+
+    // `MAGTRANSFORM.v` is `v[row][col]` row-major: indices row*3+col. Windows uses the usual
+    // column-vector affine `p' = M * p` with translation in the third column (m02, m12) → v[2], v[5].
     let mut transform = MAGTRANSFORM::default();
     transform.v[0] = scale;
+    transform.v[1] = 0.0;
+    transform.v[2] = ox;
+    transform.v[3] = 0.0;
     transform.v[4] = scale;
+    transform.v[5] = oy;
+    transform.v[6] = 0.0;
+    transform.v[7] = 0.0;
     transform.v[8] = 1.0;
 
     unsafe {

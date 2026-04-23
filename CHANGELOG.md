@@ -7,7 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Selection rectangle == on-desktop red frame, pixel-for-pixel** (P0 UX
+  guarantee). The Classic-renderer 1.5× **cap** is no longer applied in
+  `apply_source` or `WM_SIZE`, so the source rectangle (and the persistent
+  red frame) is now *literally* the rectangle the user dragged — same
+  position, same width, same height. The cap was the sole reason
+  `current_source` could differ from the rainbow selection, and from the
+  red frame the user sees on the desktop. `apply_source` still calls
+  `match_loupe_aspect_to_selection` to reshape the loupe client area to
+  the selection's aspect ratio while preserving total area (anchored at
+  the current top-left, clamped to the monitor work area; no-op while in
+  fullscreen), so for any reasonable selection the natural fit on Classic
+  remains comfortably above 1.5× and there is no flicker. **Trade-off**:
+  if the user picks an extreme selection or shrinks the loupe so much
+  that the resulting scale falls below 1.5× on Classic, the picture may
+  flicker (use the GPU renderer in that case) — but the red frame still
+  tracks `current_source` 1:1, never silently shrinking around its centre
+  the way the cap used to (`src/main.rs`).
+
+- **Wheel zoom-out now stops at the Classic 1.5× floor instead of silently
+  capping**: scrolling beyond the limit used to keep shrinking
+  `current_source` while the cap snapped it back, so the on-desktop red
+  frame would suddenly shrink and stop tracking the source. Once the next
+  zoom-out step would trip the cap on Classic, `wheel_zoom_source` now
+  returns immediately — the wheel feels "blocked" but
+  `current_source` and the red frame stay in lock-step (`src/main.rs`).
+
+- **Layered source-frame ghost trails after `MoveWindow`**: shrinking the
+  red outline (e.g. via wheel zoom) left **concentric stale-border rings**
+  on the desktop because the DWM compositor doesn't always invalidate the
+  area uncovered by an `LWA_COLORKEY` layered window. `source_frame::move_to`
+  / `hide` now call `RedrawWindow(NULL, old ∪ new, RDW_INVALIDATE |
+  RDW_ERASE | RDW_ALLCHILDREN)` to force every top-level window in the
+  affected screen rectangle to repaint and overwrite the stale red pixels
+  (`src/source_frame.rs`).
+
+- **Source-frame `CreateWindowExW` failed with `ERROR_MENU_HANDLE` (1401)**:
+  the `hMenu` slot was being passed a child-window id, which is only valid
+  for `WS_CHILD`; the source frame is `WS_POPUP` (top-level) so Windows
+  rejected the call. Now passes `None` (`src/source_frame.rs`).
+
+### Added
+
+- **Persistent on-desktop source frame**: after a region is selected, a thin
+  **red outline** is now drawn directly on the desktop at the source
+  rectangle's native screen coordinates (`src/source_frame.rs`). The frame is
+  always-topmost, **click-through in the middle** (apps underneath stay
+  interactive), and **draggable by the border** — clicking the red edge and
+  moving the mouse pans the source rect. The drag uses absolute math
+  (`start_source_top_left + (mouse_now - start_mouse)`) so the host can
+  clamp / reposition the frame mid-drag without the delta drifting.
+  Wheel-zoom and host-resize keep the frame in sync via
+  `source_frame::move_to`. The frame is **excluded from screen capture** via
+  `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` (Windows 10 v2004+) so it
+  never appears inside the magnified view, regardless of renderer.
+- **Tray menu — *Show source frame*** toggles the on-desktop outline. State
+  defaults to *visible* and is in-memory only (not persisted to
+  `config.toml`). When toggled on with no current source, the frame stays
+  hidden until the next region selection (`src/tray.rs`, `src/main.rs`).
+
 ### Changed
+
+- **In-magnifier drag-to-pan removed**: the previous left/right-button drag
+  on the hit overlay used reverse-direction math (drag right → source moves
+  left → magnified content moves right) which was confusing. Panning is now
+  exclusively done by dragging the on-desktop red **source frame** (same
+  direction as the mouse). The hit overlay keeps its other roles —
+  `WM_LBUTTONDBLCLK` for fullscreen toggle and `WM_MOUSEWHEEL` for zoom.
+  `WM_APP_PAN_DELTA` is gone; `WM_APP_SOURCE_MOVE_TO` (absolute new
+  top-left) takes its place (`src/source_frame.rs`, `src/main.rs`,
+  `src/magnifier/legacy.rs`).
+
+- **Tray icon**: a **single left-click** now starts **region selection** (same as
+  *New loupe* / the global hotkey). The configuration menu opens on **right-click**
+  only (`src/main.rs`). Tooltip text updated (`src/tray.rs`).
 
 - **Windows subsystem**: Local `cargo run` / `cargo build` now keeps the **console**
   attached by default so logs (`eprintln!`, etc.) are visible. Release builds
@@ -20,7 +95,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alternatives; GNU section notes **`dlltool.exe` not found** (MinGW `bin` must
   be on `PATH` outside MSYS2).
 
+### Changed
+
+- **Classic renderer — minimum magnification clamped to 1.5×**: `WC_MAGNIFIER`
+  becomes visibly jittery (intermittent black specks / dropped frames) once
+  the magnification factor approaches 1.0×, with the exact breakdown threshold
+  drifting between systems. Wheel-zoom, drag-region and host-resize now cap
+  the source rectangle so the resulting scale is **at least 1.5×** on the
+  Classic path (`MIN_CLASSIC_SCALE` in `src/main.rs`). Sub-1.5× overviews are
+  available on the GPU renderer (D3D11 + Lanczos), which has no such
+  limitation — switch via tray → right-click → *Renderer* → *GPU*; the
+  choice is remembered in `config.toml`.
+
 ### Fixed
+
+- **GPU renderer — pan / zoom / resize / fullscreen had no visible effect on a
+  static desktop**: the GPU path (`WGC` + `D3D11`) only re-renders when WGC
+  pushes a new frame via `FrameArrived`. With nothing moving on screen, mouse
+  pan, wheel zoom, window resize and the fullscreen toggle would all silently
+  update internal state (source rect, swap-chain size) but the picture would
+  freeze on the last captured frame — the user perceived this as "mouse
+  signals failing" (only double-click, which moves the OS-level window,
+  appeared to work). Each `on_frame` now `CopyResource`s the WGC pool texture
+  into a self-owned `cached_tex` (`src/magnifier/gpu/mod.rs`), and
+  `GpuRenderer::resize_to` / `fit_source` / `set_source` call a new
+  `redraw()` that re-renders from `cached_tex` with the latest
+  source/viewport. The cache is dropped when `rebuild()` switches the
+  captured monitor so the first redraw after a switch isn't stale.
+
+- **Classic magnifier — aspect ratio / “wrong region” after resize or fullscreen**:
+  the ~60 Hz refresh called only `MagSetWindowSource`, which clears the custom
+  `MagSetWindowTransform` on many Windows builds so the control falls back to
+  stretching the source to the client. `Renderer::set_source` for classic now
+  re-applies `fit_source` using the host’s client size (`GetParent` +
+  `GetClientRect`) so uniform scale and letterboxing persist (`src/magnifier/mod.rs`).
+
+- **Classic magnifier — letterboxed view not centered** (e.g. portrait fullscreen):
+  `fit_source` applies offsets `ox`/`oy` in **`MAGTRANSFORM` columns `v[2]` and `v[5]`**
+  (third column of the affine matrix), not `v[6]`/`v[7]`, matching Win32 `M * [x,y,1]ᵀ`
+  layout (`src/magnifier/legacy.rs`).
 
 - **Main window creation failed** (`failed to create main window`): child
   `CreateWindowExW` calls for `WC_MAGNIFIER` and the hit-test overlay now pass
@@ -46,6 +159,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directories, while keeping `embed-resource` for MSVC (`rc.exe`).
 
 ### Added
+
+- **Wheel zoom on the magnified view**: scroll the mouse wheel over the
+  magnified area to zoom in or out (scales the source `RECT` about its center;
+  same hit overlay as double-click / right-drag). Posted as `WM_APP_WHEEL_ZOOM`
+  (`src/magnifier/legacy.rs`, `src/main.rs`).
+
+- **Pan the magnified region**: hold **left or right mouse button** on the
+  magnified view and drag to slide the source rectangle on the virtual desktop
+  (uniform scale matches resize; requires the hit overlay). Implemented via
+  `WM_APP_PAN_DELTA` (`src/magnifier/legacy.rs`, `src/main.rs`).
+
+- **Optional GPU renderer** (`src/magnifier/gpu/`): Windows.Graphics.Capture screen
+  capture, D3D11 swapchain on a child window, and Lanczos-3 upsampling (HLSL
+  compiled at runtime with `D3DCompile`). Tray menu *Renderer* switches between
+  **Classic** (`WC_MAGNIFIER`) and **GPU**; `renderer` in `%APPDATA%\loupe\config.toml`
+  persists the choice. If WGC or D3D11 setup fails, the app falls back to Classic.
 
 - **Double-click for borderless fullscreen**: double-click the magnified view
   to toggle borderless fullscreen (strips title bar and borders, covers the
