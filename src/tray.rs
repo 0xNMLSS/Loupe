@@ -1,0 +1,90 @@
+use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::UI::Shell::{
+    NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, IDI_APPLICATION, LoadIconW,
+    MF_SEPARATOR, MF_STRING, SetForegroundWindow, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
+};
+use windows::core::PCWSTR;
+
+/// Application-defined message Windows posts back to us for tray events.
+pub const WM_APP_TRAY: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+
+/// Identifier used in our `NOTIFYICONDATAW`. A constant is enough because we
+/// only ever own one tray icon.
+const TRAY_UID: u32 = 1;
+
+/// Menu command ids returned by `TrackPopupMenu` via `WM_COMMAND`.
+pub const IDM_NEW_LENS: u32 = 100;
+pub const IDM_QUIT: u32 = 101;
+
+fn build_nid(hwnd: HWND) -> NOTIFYICONDATAW {
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: TRAY_UID,
+        uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
+        uCallbackMessage: WM_APP_TRAY,
+        ..Default::default()
+    };
+    unsafe {
+        if let Ok(icon) = LoadIconW(None, IDI_APPLICATION) {
+            nid.hIcon = icon;
+        }
+    }
+    let tip: Vec<u16> = "lens — Ctrl+Alt+Z to magnify\0".encode_utf16().collect();
+    let copy_len = tip.len().min(nid.szTip.len());
+    nid.szTip[..copy_len].copy_from_slice(&tip[..copy_len]);
+    nid
+}
+
+/// Add the tray icon. Returns `true` if Explorer accepted it.
+pub fn add(hwnd: HWND) -> bool {
+    let nid = build_nid(hwnd);
+    unsafe { Shell_NotifyIconW(NIM_ADD, &nid).as_bool() }
+}
+
+/// Remove the tray icon during shutdown.
+pub fn remove(hwnd: HWND) {
+    let nid = build_nid(hwnd);
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+    }
+}
+
+/// Show the right-click menu at the current cursor position. The chosen item
+/// is delivered later as a `WM_COMMAND` with `IDM_NEW_LENS` or `IDM_QUIT`.
+pub fn show_menu(hwnd: HWND) {
+    unsafe {
+        let menu = match CreatePopupMenu() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let new_lens: Vec<u16> = "New lens\t(Ctrl+Alt+Z)\0".encode_utf16().collect();
+        let quit: Vec<u16> = "Quit\0".encode_utf16().collect();
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            IDM_NEW_LENS as usize,
+            PCWSTR(new_lens.as_ptr()),
+        );
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, IDM_QUIT as usize, PCWSTR(quit.as_ptr()));
+
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // Required by docs so the menu dismisses if the user clicks elsewhere.
+        let _ = SetForegroundWindow(hwnd);
+        let _ = TrackPopupMenu(
+            menu,
+            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
+            pt.x,
+            pt.y,
+            None,
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+    }
+}
